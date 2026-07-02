@@ -1,7 +1,7 @@
 # evi-assistant.github.io
 
 The landing site for **eVi** — a local-first personal AI assistant — served at
-**https://evi-assistant.github.io/**.
+**https://evi-ai.dev** (custom domain; `evi-assistant.github.io` redirects to it).
 
 This repo holds only the static landing page (`index.html` + `styles.css`). The
 project itself lives at **https://github.com/evi-assistant/evi-ai**.
