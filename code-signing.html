@@ -1,0 +1,153 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Code signing policy — eVi</title>
+  <meta name="description" content="How eVi's desktop installers are code-signed, who approves releases, and how to verify a download. Free code signing by SignPath.io, certificate by the SignPath Foundation." />
+  <meta property="og:title" content="Code signing policy — eVi" />
+  <meta property="og:description" content="How eVi's desktop installers are signed and how to verify a download." />
+  <meta property="og:type" content="website" />
+  <link rel="stylesheet" href="styles.css" />
+  <link rel="icon" href="favicon.svg" type="image/svg+xml" />
+  <style>
+    .policy { max-width: 820px; margin: 0 auto; }
+    .policy h2 { font-size: 22px; margin: 36px 0 12px; letter-spacing: -0.4px; }
+    .policy h2:first-of-type { margin-top: 0; }
+    .policy p, .policy li { color: var(--muted); }
+    .policy strong { color: var(--text); }
+    .policy ul { padding-left: 20px; margin: 8px 0; }
+    .policy li { margin: 6px 0; }
+    .policy code { color: var(--accent-2); background: var(--panel); padding: 1px 6px; border-radius: 5px; font-size: 13px; }
+    .attrib { background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 16px 20px; margin: 0 0 10px; color: var(--text); }
+    .note { background: var(--panel); border: 1px solid var(--border); border-left: 3px solid var(--accent-2); border-radius: 10px; padding: 14px 18px; margin: 20px 0; color: var(--muted); }
+    table.cert { border-collapse: collapse; margin: 10px 0 4px; }
+    table.cert th, table.cert td { text-align: left; padding: 6px 20px 6px 0; font-size: 14px; vertical-align: top; }
+    table.cert th { color: var(--text); font-weight: 600; white-space: nowrap; }
+    table.cert td { color: var(--muted); }
+  </style>
+</head>
+<body>
+  <header class="nav">
+    <a class="brand" href="index.html" aria-label="eVi home">
+      <span class="brand-mark">e<span class="brand-accent">Vi</span></span>
+    </a>
+    <nav class="nav-links">
+      <a href="index.html#features">Features</a>
+      <a href="index.html#install">Install</a>
+      <a href="index.html#download">Download</a>
+      <a class="nav-gh" href="https://github.com/evi-assistant/evi-ai">GitHub ↗</a>
+    </nav>
+  </header>
+
+  <main id="top">
+    <section class="section">
+      <h2 class="section-title">Code signing policy</h2>
+      <p class="section-lede">How eVi's desktop installers are signed, who approves releases, and how to verify a download.</p>
+
+      <div class="policy">
+        <p class="attrib">
+          Free code signing provided by <a href="https://about.signpath.io">SignPath.io</a>,
+          certificate by <a href="https://signpath.org">SignPath Foundation</a>.
+        </p>
+
+        <h2>What is signed</h2>
+        <p>
+          eVi's Windows desktop installers — the NSIS <code>*-setup.exe</code> and the
+          <code>.msi</code>, published on the
+          <a href="https://github.com/evi-assistant/evi-ai/releases">GitHub Releases page</a> —
+          are code-signed. The digital signature identifies the publisher as
+          <strong>SignPath Foundation</strong> on behalf of the eVi project.
+        </p>
+
+        <div class="note">
+          <strong>Rollout status.</strong> eVi's SignPath Foundation subscription is being set
+          up (application submitted July&nbsp;2026). Until Authenticode signing is live in the
+          release pipeline, Windows installers are distributed unsigned — verify them with the
+          SHA-256 checksums and the update signatures described below. macOS and Linux builds
+          are not covered by this certificate (see <a href="#scope">Scope</a>).
+        </div>
+
+        <h2>Project roles</h2>
+        <p>
+          eVi is maintained by a single developer. Following SignPath's role model, the
+          maintainer holds all signing roles:
+        </p>
+        <ul>
+          <li><strong>Authors</strong> — trusted to modify source in version control without
+            additional review: <a href="https://github.com/dmang-dev">@dmang-dev</a>
+            (see the
+            <a href="https://github.com/orgs/evi-assistant/people?query=role%3Aowner">evi-assistant organization owners</a>).</li>
+          <li><strong>Reviewers</strong> — review changes proposed by non-committers:
+            <a href="https://github.com/dmang-dev">@dmang-dev</a>.</li>
+          <li><strong>Approvers</strong> — authorize each release for signing:
+            <a href="https://github.com/dmang-dev">@dmang-dev</a>.</li>
+        </ul>
+        <p>
+          Every release is built on a trusted build system (GitHub Actions) from the public
+          source at <a href="https://github.com/evi-assistant/evi-ai">github.com/evi-assistant/evi-ai</a>,
+          and each signing request is manually approved by an Approver before the artifact is
+          signed.
+        </p>
+
+        <h2>Privacy</h2>
+        <p>
+          eVi is a local-first application. <strong>It will not transfer any information to
+          other networked systems unless specifically requested by the user or the person
+          installing or operating it.</strong> eVi runs language models on the user's own
+          hardware, or connects only to the model backends and services the user explicitly
+          configures (for example, a local LLM server or a CLI agent the user points it at).
+          Those user-selected third-party services are governed by their own privacy policies.
+          eVi ships with no telemetry enabled by default.
+        </p>
+
+        <h2>Verifying a signed installer</h2>
+        <table class="cert">
+          <tr><th>Publisher</th><td>SignPath Foundation</td></tr>
+          <tr><th>Hash algorithm</th><td>SHA-256</td></tr>
+          <tr><th>On Windows</th><td>right-click the installer → Properties → Digital Signatures</td></tr>
+        </table>
+        <p>
+          All release artifacts are additionally covered by <strong>minisign</strong>
+          signatures for eVi's in-app updater, and PyPI packages are published with
+          <strong>Sigstore</strong> attestations via PyPI Trusted Publishing.
+        </p>
+
+        <h2>Signing infrastructure</h2>
+        <p>
+          Signing keys are generated and held in SignPath's Hardware Security Module (HSM);
+          the eVi project never has direct access to the private key. Builds are produced in
+          public CI and signed only after a maintainer manually approves the release.
+        </p>
+
+        <h2>Reporting</h2>
+        <p>
+          To report a suspicious or unsigned binary claiming to be eVi, open a private report
+          via
+          <a href="https://github.com/evi-assistant/evi-ai/security/advisories/new">GitHub Security Advisories</a>.
+        </p>
+
+        <h2 id="scope">Scope</h2>
+        <p>
+          This certificate covers eVi's <strong>Windows</strong> installers only. macOS and
+          Linux artifacts are not signed under this certificate — macOS notarization requires
+          an Apple Developer ID, and Linux packages are distributed unsigned with published
+          checksums. Auto-updates on all platforms are verified with minisign.
+        </p>
+      </div>
+    </section>
+  </main>
+
+  <footer class="footer">
+    <div class="foot-brand">e<span class="brand-accent">Vi</span></div>
+    <nav class="foot-links">
+      <a href="index.html">Home</a>
+      <a href="https://github.com/evi-assistant/evi-ai">GitHub</a>
+      <a href="https://pypi.org/project/evi-assistant/">PyPI</a>
+      <a href="https://github.com/evi-assistant/evi-ai/releases/latest">Releases</a>
+      <a href="code-signing.html">Code signing</a>
+    </nav>
+    <p class="foot-note">Local-first · MIT licensed · Python 3.13+ · built for your own hardware</p>
+  </footer>
+</body>
+</html>
