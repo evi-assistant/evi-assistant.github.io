@@ -1,0 +1,115 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Structured Outputs &amp; Batch — eVi docs</title>
+  <meta name="description" content="Two related features let you treat eVi like a programmable text-to-data tool instead of just a chat assistant: — eVi documentation." />
+  <link rel="stylesheet" href="../styles.css" />
+  <link rel="stylesheet" href="docs.css" />
+  <link rel="icon" href="../favicon.svg" type="image/svg+xml" />
+</head>
+<body>
+  <header class="nav">
+    <a class="brand" href="../index.html" aria-label="eVi home">
+      <span class="brand-mark">e<span class="brand-accent">Vi</span></span>
+    </a>
+    <nav class="nav-links">
+      <a href="index.html">Docs</a>
+      <a href="../index.html#install">Install</a>
+      <a href="../index.html#download">Download</a>
+      <a class="nav-gh" href="https://github.com/evi-assistant/evi-ai">GitHub ↗</a>
+    </nav>
+  </header>
+  <main class="doc-main">
+    <article class="doc">
+<h1>Structured Outputs &amp; Batch</h1>
+<h2>Overview</h2>
+<p>Two related features let you treat eVi like a programmable text-to-data tool instead of just a chat assistant:</p>
+<ul><li><strong>Structured Outputs</strong> constrain a single turn's reply to a <strong>JSON Schema</strong> you supply. Where eVi's <code>/json</code> just forces the model to return <em>some</em> JSON object, Structured Outputs force a <em>specific shape</em> — named fields, types, required keys. This is what you want for extraction, classification, and any case where a script downstream needs to parse the answer reliably.</li><li><strong>Batch</strong> is the local analog of a cloud "Batch API": feed in a file of many prompts and eVi runs each one through its own headless agent — optionally several in parallel — emitting one JSON result per line. Good for evals, bulk extraction, translation runs, and other unattended jobs.</li></ul>
+<p>The two compose: each batch item can carry its own schema, so you can run hundreds of schema-constrained extractions in one command.</p>
+<h2>How it works</h2>
+<h3>Structured Outputs</h3>
+<p>A JSON Schema is wrapped into the OpenAI-style <code>response_format</code> object that eVi's agent already forwards to the backend:</p>
+<pre><code class="language-json">{
+  "type": "json_schema",
+  "json_schema": { "name": "output", "schema": { ... }, "strict": true }
+}</code></pre>
+<p>The wrapping is done in <code>evi/structured.py</code>:</p>
+<ul><li><code>load_schema(spec)</code> accepts <strong>either</strong> a file path <strong>or</strong> an inline JSON string (it decides by checking whether the trimmed text starts with <code>{</code>). It returns the parsed schema dict, raising <code>SchemaError</code> if the file is missing, the JSON is invalid, or the top level isn't an object.</li><li><code>as_response_format(schema, name="output", strict=True)</code> wraps a bare schema into the <code>json_schema</code> envelope shown above. It is smart about <strong>not double-wrapping</strong>: if you already passed a full <code>{"type": "json_schema", ...}</code> object, or a <code>{"name", "schema"}</code> pair, it respects that as-is.</li></ul>
+<p>That <code>response_format</code> is passed through <code>agent.chat(...)</code> and only attached to the backend request when non-<code>None</code> (see <code>evi/llm/agent.py</code>). Backends that support schema-constrained decoding (OpenAI, LM Studio, recent llama.cpp / Ollama) honor it; backends that don't simply ignore it and fall back to best-effort JSON — eVi does not crash or hard-fail on an unsupporting backend.</p>
+<h3>Batch</h3>
+<p><code>evi/batch.py</code> is a small, model-agnostic engine:</p>
+<ul><li><code>parse_batch_file(path)</code> reads the input and normalizes it to a list of <code>{"id", "prompt", ...}</code> dicts. It chooses a parser by file extension:<ul><li><code>.jsonl</code> / <code>.ndjson</code> — one JSON object per line; blank lines skipped.</li><li><code>.json</code> — a single JSON array of objects.</li><li>anything else — one prompt per non-blank line, with <code>#</code> comment lines ignored.</li><li>Every item without an explicit <code>id</code> is assigned its list index, so outputs can be correlated back to inputs.</li><li>A missing file or a malformed/empty-<code>prompt</code> item raises <code>BatchError</code>.</li></ul></li><li><code>run_batch(items, run_one, parallel=1)</code> runs each item through the supplied <code>run_one</code> callable, preserving input order. With <code>parallel &gt; 1</code> it uses a <code>ThreadPoolExecutor</code> (capped at the number of items). Crucially, <strong>a failure in one item never aborts the batch</strong> — per-item exceptions are caught and recorded as <code>{"id", "prompt", "error": "&lt;Type&gt;: &lt;message&gt;"}</code>.</li><li><code>to_jsonl(results)</code> renders the result list as JSONL (one compact JSON object per line, <code>ensure_ascii=False</code>).</li></ul>
+<p>The CLI's <code>batch</code> command supplies a <code>run_one</code> that builds a fresh agent per item, applies the item's <code>mode</code>/<code>schema</code> (falling back to the command flags), and runs it through the headless engine.</p>
+<h3>Headless engine (shared substrate)</h3>
+<p>Both <code>evi run</code> and <code>evi batch</code> drain a single agent turn-loop via <code>run_headless(agent, prompt, max_turns=12, response_format=None)</code> in <code>evi/headless.py</code>. It collects streamed text, tool results (truncated to 2000 chars each), usage stats, and any error into a <code>HeadlessResult</code>, and forwards <code>response_format</code> to the backend when given. <code>to_json(res)</code> serializes it to <code>{"text", "tools", "usage", "error"}</code>.</p>
+<h2>Setup</h2>
+<p>There is <strong>no dedicated config section</strong> for Structured Outputs or Batch — they are stateless features driven entirely by command flags, slash-command arguments, and request fields. They reuse your existing model/backend configuration.</p>
+<ul><li><strong>Config file</strong> — these features run against whatever backend and model you've configured in <code>~/.evi/config.toml</code> (the same <code>[model]</code> / backend settings the rest of eVi uses). No keys need to be added to enable Structured Outputs or Batch.</li><li><strong>Pip extras</strong> — none required. Both <code>evi/structured.py</code> and <code>evi/batch.py</code> are pure standard library (<code>json</code>, <code>pathlib</code>, <code>concurrent.futures</code>).</li><li><strong>Defaults</strong>:<ul><li><code>as_response_format</code>: <code>name="output"</code>, <code>strict=true</code>.</li><li><code>run_headless</code>: <code>max_turns=12</code>.</li><li><code>evi run</code>: <code>--format text</code>, no schema.</li><li><code>evi batch</code>: <code>--parallel 1</code> (sequential), output to <strong>stdout</strong> unless <code>--out</code> is given.</li></ul></li><li><strong>Backend support</strong> — schema enforcement depends on the backend. Point eVi at a backend that supports OpenAI-style <code>response_format</code> (OpenAI, LM Studio, recent llama.cpp / Ollama) for hard schema guarantees; others fall back to best-effort JSON.</li></ul>
+<h2>Usage</h2>
+<h3>REPL slash command</h3>
+<p>Inside the interactive REPL:</p>
+<ul><li><code>/schema &lt;file|inline-json&gt; [prompt]</code> — constrain the <strong>next</strong> turn to a JSON Schema.<ul><li>With a trailing prompt, it constrains that turn immediately.</li><li>With no prompt, it "arms" the schema for your next message (<code>schema armed for your next message</code>).</li><li><code>/schema off</code> clears an armed schema (<code>schema cleared</code>).</li></ul></li><li><code>/json &lt;prompt&gt;</code> — the lighter sibling: forces a JSON <strong>object</strong> (<code>{"type": "json_object"}</code>) without a specific shape.</li></ul>
+<p>(Listed in REPL help as <code>/schema &lt;file&gt; [prompt]</code> — "constrain the next turn to a JSON Schema".)</p>
+<h3>CLI: single headless run</h3>
+<pre><code>evi run "&lt;prompt&gt;" --schema &lt;file|inline-json&gt; [--format text|json] [--mode chat|cowork|code] [--yes]</code></pre>
+<ul><li><code>--schema</code> accepts a file path or inline JSON. A bad schema prints <code>error: ...</code> to stderr and exits with code <strong>2</strong>.</li><li><code>--format json</code> prints the full <code>{text, tools, usage, error}</code> envelope; <code>text</code> (default) prints just the final answer.</li><li>If <code>prompt</code> is omitted, eVi reads it from stdin.</li><li>Without <code>--yes</code>, tool calls that aren't already auto-approved are <strong>denied</strong> (so a scripted run never blocks waiting for a permission prompt).</li></ul>
+<h3>CLI: batch</h3>
+<pre><code>evi batch &lt;input_file&gt; [--out results.jsonl] [--parallel N] [--mode &lt;preset&gt;] [--yes]</code></pre>
+<ul><li><code>&lt;input_file&gt;</code> — <code>.jsonl</code> / <code>.json</code>, or a plain one-prompt-per-line file.</li><li><code>--out</code> / <code>-o</code> — write JSONL results to a file; omit to print to stdout. When writing to a file, eVi prints a summary like <code>wrote 12 results (11 ok) -&gt; results.jsonl</code>.</li><li><code>--parallel</code> / <code>-j</code> — run N items concurrently.</li><li><code>--mode</code> / <code>-m</code> — default tool preset for items that don't specify one.</li><li><code>--yes</code> / <code>-y</code> — auto-approve tool calls (otherwise non-approved tools are denied).</li><li>Per-item <code>mode</code> and <code>schema</code> fields in the input file <strong>override</strong> the command-line flags.</li></ul>
+<h3>Web UI / API</h3>
+<p>The web chat endpoint accepts an optional <code>output_schema</code> field:</p>
+<pre><code>POST /api/chat
+{ "session_id": "...", "message": "...", "output_schema": { ...JSON Schema... } }</code></pre>
+<ul><li><code>output_schema</code> may be a JSON Schema <strong>object</strong> or an inline-JSON <strong>string</strong> (a string is run through <code>load_schema</code>).</li><li>An invalid schema returns <strong>HTTP 400</strong> with <code>bad schema: &lt;reason&gt;</code>.</li><li>The reply streams back over SSE exactly like a normal turn, but the model's output is constrained to the schema.</li></ul>
+<h2>Examples</h2>
+<h3>Example 1 — Extract structured contact data with <code>evi run</code></h3>
+<p>Create a schema file <code>contact.json</code>:</p>
+<pre><code class="language-json">{
+  "type": "object",
+  "properties": {
+    "name":  { "type": "string" },
+    "email": { "type": "string" },
+    "title": { "type": "string" }
+  },
+  "required": ["name", "email"],
+  "additionalProperties": false
+}</code></pre>
+<p>Run a one-shot extraction and get the parsed JSON envelope:</p>
+<pre><code class="language-bash">echo "Jane Doe, VP Engineering, jane@acme.io" | \
+  evi run "Extract the contact fields from this signature." \
+  --schema contact.json --format json</code></pre>
+<p>The <code>text</code> field of the result will contain a JSON object matching the schema, e.g.:</p>
+<pre><code class="language-json">{"text":"{\"name\":\"Jane Doe\",\"email\":\"jane@acme.io\",\"title\":\"VP Engineering\"}","tools":[],"usage":{"prompt":120,"completion":24,"total":144},"error":null}</code></pre>
+<p>You can also pass the schema inline instead of a file:</p>
+<pre><code class="language-bash">evi run "Classify the sentiment." \
+  --schema '{"type":"object","properties":{"sentiment":{"type":"string","enum":["pos","neg","neu"]}},"required":["sentiment"]}' \
+  "I absolutely love this product"</code></pre>
+<h3>Example 2 — Batch extraction with per-item schemas</h3>
+<p>Input file <code>jobs.jsonl</code> — each line is its own job, and the first two pin a schema (the schema path is resolved per item, so <code>contact.json</code> from Example 1 is reused):</p>
+<pre><code class="language-jsonl">{"id": "a1", "prompt": "Extract contacts from: Bob Lee, CTO, bob@x.io", "schema": "contact.json"}
+{"id": "a2", "prompt": "Extract contacts from: Amy Ng, amy@y.io", "schema": "contact.json"}
+{"id": "a3", "prompt": "Summarize in one sentence: the quick brown fox..."}</code></pre>
+<p>Run all three, four at a time, writing results to a file:</p>
+<pre><code class="language-bash">evi batch jobs.jsonl --out out.jsonl --parallel 4 --yes</code></pre>
+<p>eVi prints a summary (<code>wrote 3 results (3 ok) -&gt; out.jsonl</code>) and <code>out.jsonl</code> contains one JSON object per line, keyed by your <code>id</code>:</p>
+<pre><code class="language-jsonl">{"id": "a1", "prompt": "Extract contacts from: Bob Lee, CTO, bob@x.io", "text": "{\"name\":\"Bob Lee\",\"email\":\"bob@x.io\",\"title\":\"CTO\"}", "error": null, "usage": {"prompt": 90, "completion": 22, "total": 112}}
+{"id": "a2", "prompt": "Extract contacts from: Amy Ng, amy@y.io", "text": "{\"name\":\"Amy Ng\",\"email\":\"amy@y.io\"}", "error": null, "usage": {"prompt": 84, "completion": 18, "total": 102}}
+{"id": "a3", "prompt": "Summarize in one sentence: the quick brown fox...", "text": "A fast brown fox leaps over a lazy dog.", "error": null, "usage": {"prompt": 60, "completion": 12, "total": 72}}</code></pre>
+<p>A plain one-prompt-per-line file works too (no schema, no ids needed — eVi assigns indexes):</p>
+<pre><code class="language-text"># translation batch — one prompt per line, blank lines and # comments ignored
+Translate to French: Good morning
+Translate to French: See you tomorrow</code></pre>
+<pre><code class="language-bash">evi batch prompts.txt -j 2</code></pre>
+<h2>Notes / limits</h2>
+<ul><li><strong>Schema enforcement is backend-dependent.</strong> Only backends that support OpenAI-style <code>response_format</code> actually <em>guarantee</em> the shape. Others ignore it and return best-effort JSON — design your downstream parsing to tolerate the occasional non-conforming reply when running against such a backend.</li><li><strong>No double-wrapping.</strong> You can pass a bare schema, a <code>{"name","schema"}</code> pair, or a full <code>{"type":"json_schema",...}</code> envelope; <code>as_response_format</code> detects and preserves the richer forms. To control the <code>strict</code> flag or schema <code>name</code>, pass the full envelope yourself.</li><li><strong><code>/schema</code> vs <code>/json</code>.</strong> <code>/json</code> forces an unstructured JSON object; <code>/schema</code> forces a specific schema. Use <code>/schema off</code> to clear an armed schema between turns.</li><li><strong>Batch is fail-open per item.</strong> One bad prompt or one item-level exception never aborts the run — the failing item gets an <code>error</code> string and the rest proceed. Always inspect each output line's <code>error</code> field; a present <code>error</code> means that item failed even though the batch "succeeded".</li><li><strong>Unattended permission policy.</strong> In both <code>evi run</code> and <code>evi batch</code>, without <code>--yes</code> any tool call not already on your auto-approve list is <strong>denied</strong> rather than prompting (a scripted run can't answer a prompt). Pass <code>--yes</code> to auto-approve all tool calls for genuinely unattended jobs — and only do so when you trust the prompts, since it removes the human-in-the-loop guard.</li><li><strong>Parallelism caveats.</strong> <code>--parallel</code> uses threads; the effective worker count is capped at the number of items. Higher concurrency can hit backend rate limits or local-model memory limits — tune <code>N</code> to your hardware/backend.</li><li><strong>Tool output truncation.</strong> Headless results truncate each tool's captured output to 2000 characters, and <code>max_turns</code> defaults to 12 — long multi-tool reasoning chains may be cut short in headless/batch mode.</li><li><strong>Input validation.</strong> <code>evi run</code>/<code>evi batch</code> exit with code <strong>2</strong> on a bad schema or unparseable/empty batch input; an empty batch (no prompts) exits <strong>1</strong>. A headless <code>run</code> whose turn errored (text mode) exits <strong>1</strong> with the error on stderr.</li><li><strong>Privacy.</strong> Like the rest of eVi, these run locally against your configured backend; no data leaves your machine beyond what your chosen backend itself sends.</li></ul>
+    </article>
+    <a class="doc-source" href="https://github.com/evi-assistant/evi-ai/blob/main/docs/features/structured-and-batch.md">Edit on GitHub ↗</a>
+  </main>
+  <footer class="doc-foot">
+    <a href="index.html">← All documentation</a>
+    <span>eVi — local-first personal AI assistant</span>
+  </footer>
+</body>
+</html>

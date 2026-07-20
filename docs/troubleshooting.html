@@ -1,0 +1,92 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Troubleshooting — eVi docs</title>
+  <meta name="description" content="Common problems, in roughly the order new users hit them. — eVi documentation." />
+  <link rel="stylesheet" href="../styles.css" />
+  <link rel="stylesheet" href="docs.css" />
+  <link rel="icon" href="../favicon.svg" type="image/svg+xml" />
+</head>
+<body>
+  <header class="nav">
+    <a class="brand" href="../index.html" aria-label="eVi home">
+      <span class="brand-mark">e<span class="brand-accent">Vi</span></span>
+    </a>
+    <nav class="nav-links">
+      <a href="index.html">Docs</a>
+      <a href="../index.html#install">Install</a>
+      <a href="../index.html#download">Download</a>
+      <a class="nav-gh" href="https://github.com/evi-assistant/evi-ai">GitHub ↗</a>
+    </nav>
+  </header>
+  <main class="doc-main">
+    <article class="doc">
+<h1>Troubleshooting</h1>
+<p>Common problems, in roughly the order new users hit them.</p>
+<h2>Safe mode — is a customization breaking things?</h2>
+<p>If eVi behaves oddly and you suspect a project <code>EVI.md</code>, skill, plugin, hook, MCP server, memory, guardrail, or custom command, run with <strong><code>--safe-mode</code></strong> (or <code>EVI_SAFE_MODE=1</code>) to load <strong>none</strong> of them:</p>
+<pre><code class="language-bash">evi --safe-mode chat        # clean baseline — no customizations loaded
+evi --safe-mode web         # same clean boot for the web / desktop UI</code></pre>
+<p>The REPL header shows <code>SAFE MODE (customizations off)</code>. If the problem disappears in safe mode, re-enable customizations one at a time to find the culprit.</p>
+<p>Safe mode is carried in the environment (<code>EVI_SAFE_MODE=1</code>), so it applies to the whole process tree — including the desktop app's sidecar and any subagents — and is never written to your config. It switches off:</p>
+<table><thead><tr><th></th><th></th></tr></thead><tbody><tr><td>Project context</td><td><code>EVI.md</code> / <code>AGENTS.md</code> — including on a later <code>/cd</code></td></tr><tr><td>Config overlays</td><td>your profile <strong>and</strong> a repo's <code>.evi.toml</code> — safe mode is <em>stock config</em></td></tr><tr><td>Memory</td><td>the prompt-side index <strong>and</strong> the <code>remember</code>/<code>recall</code> tools</td></tr><tr><td>Skills</td><td>the catalog <strong>and</strong> <code>invoke_skill</code> / <code>list_skills</code></td></tr><tr><td>Hooks</td><td><code>~/.evi/hooks.toml</code> + every plugin's hooks</td></tr><tr><td>Guardrails</td><td><code>~/.evi/guardrails.toml</code></td></tr><tr><td>Commands</td><td>user + plugin slash commands (and their tab-completion)</td></tr><tr><td>Plugins</td><td><code>bin/</code> PATH wiring</td></tr><tr><td>MCP</td><td>external servers are never spawned</td></tr><tr><td>Output style</td><td>a user <code>~/.evi/styles/&lt;name&gt;.md</code> can override a builtin — skipped</td></tr><tr><td>Keybindings</td><td><code>~/.evi/keybindings.toml</code> — stock keys</td></tr><tr><td>Transcripts</td><td>not written</td></tr></tbody></table>
+<p>Inspection commands still work normally, so you can find and fix the culprit — <code>evi plugin list</code>, <code>evi skill list</code> and <code>evi config show</code> are unaffected.</p>
+<h2>"evi: command not found" after <code>pip install -e .</code></h2>
+<p>The venv isn't on PATH. Either activate it (<code>.venv\Scripts\Activate.ps1</code> on Windows, <code>source .venv/bin/activate</code> on Linux/macOS) or invoke directly:</p>
+<pre><code class="language-bash">.venv\Scripts\evi.exe --help</code></pre>
+<h2>"LLM request failed: APIConnectionError"</h2>
+<p>eVi can't reach the backend. Check, in order:</p>
+<ol><li>Is the backend actually running?<ul><li>LM Studio: open the app, Developer tab, <strong>Start Server</strong>.</li><li>Ollama: <code>ollama serve</code> or check <code>sudo systemctl status ollama</code>.</li><li>llama.cpp: <code>llama-server -m &lt;path&gt;</code> must be running.</li></ul></li><li>Is <code>[llm] base_url</code> correct? ```bash evi config show ```</li><li>Can you hit it manually? ```bash curl http://localhost:1234/v1/models   # LM Studio curl http://localhost:11434/api/tags   # Ollama ```</li><li>Are you behind a proxy / VPN that's blocking localhost? Check <code>HTTP_PROXY</code>, <code>HTTPS_PROXY</code>, <code>NO_PROXY</code>.</li></ol>
+<h2>"The model can't seem to call tools — it just describes them"</h2>
+<p>The model isn't tool-capable, or the temperature is too high.</p>
+<ul><li>Use a tool-tuned model: Qwen2.5 series (especially <strong>14B+</strong>), Hermes-3 on Llama 3.1, Command-R. See [docs/models.md] in the README quick reference.</li><li>Avoid Gemma 2/3 and Phi-4 — their tool calling is hit-or-miss.</li><li>Lower <code>[llm] temperature</code> to 0.3–0.4. The default 0.7 makes tool-call JSON noisy.</li><li>Watch the model's chat template: some GGUF builds have the tool prompt baked wrong. Try a different build from a known-good repacker (bartowski / unsloth on HF).</li></ul>
+<h2>"Permission denied" for every tool call (CLI)</h2>
+<p>Auto-approval might be off and you're sitting at a <code>(approve y/n/a)</code> prompt that hasn't been answered. Type <code>a</code> to allow everything for the session, then revisit <code>auto.auto_approve</code> in <code>config.toml</code> for a persistent fix.</p>
+<h2>ComfyUI image generation hangs or times out</h2>
+<p>The default 5-minute poll ceiling is generous, but a stuck workflow won't get unstuck. Check:</p>
+<ol><li>ComfyUI itself is responsive: <code>curl http://localhost:8188/system_stats</code>.</li><li>The checkpoint named in <code>[comfy] default_checkpoint</code> exists in ComfyUI's models directory. If not, the workflow fails immediately — tail ComfyUI's terminal for the actual error.</li><li>The sampler/scheduler combo is valid (<code>euler</code> + <code>normal</code> is safe).</li></ol>
+<h2>MCP server says "spawned but no tools registered"</h2>
+<p>The server probably failed to start. Tail eVi's stderr or check <code>~/.evi/logs/</code>:</p>
+<ul><li><code>npx</code> is missing → install Node.js.</li><li>The MCP server package isn't installable → try <code>npx -y &lt;package&gt;</code> manually to see the error.</li><li>Server start needs a long handshake → bump <code>MCPBridge.run(timeout=…)</code> if you're hacking on the code.</li></ul>
+<p>Confirm what <em>did</em> register: <code>evi mcp list-tools</code>.</p>
+<h2>Tauri desktop window stays on the loading shim</h2>
+<p>The bundled Python server didn't come up in 20 seconds. Common reasons:</p>
+<ul><li><code>py -3.13</code> not on PATH. Override with <code>EVI_PYTHON=python3.13</code>.</li><li><code>EVI_REPO_ROOT</code> couldn't be detected (binary not next to the repo). Set it explicitly.</li><li>The web extras aren't installed: <code>pip install -e '.[web]'</code>.</li><li>For thin-client mode, set <code>EVI_REMOTE_URL=http://server:8000</code> to skip the spawn entirely.</li></ul>
+<p>Tail the Tauri stderr to see what <code>py -3.13 -m uvicorn …</code> actually did.</p>
+<h2>Scheduler / cron tasks aren't firing</h2>
+<ul><li><code>apscheduler</code> not installed: <code>pip install 'evi-assistant[scheduler]'</code>.</li><li>The scheduler isn't running anywhere. Pick one:<ul><li>foreground daemon: <code>evi scheduler</code></li><li>alongside web: <code>evi web</code> (lifespan starts the scheduler)</li></ul></li><li>The cron expression is invalid: check <code>~/.evi/logs/</code> — failed jobs get logged with the parse error.</li><li>The task is disabled: <code>evi schedule list</code> shows status; flip with <code>evi schedule enable &lt;id&gt;</code>.</li></ul>
+<h2><code>evi dream</code> reports zero transcripts to review</h2>
+<p>You ran chat sessions before <code>tools.transcripts</code> was on, or the day-dir under <code>~/.evi/transcripts/</code> doesn't exist yet. Confirm:</p>
+<pre><code class="language-bash">evi config show | grep transcripts
+ls ~/.evi/transcripts/</code></pre>
+<p>Run a quick <code>evi chat</code>, exit, then <code>ls ~/.evi/transcripts/&lt;today&gt;/</code>.</p>
+<h2>STT: "no input device" / "PortAudioError"</h2>
+<p><code>sounddevice</code> couldn't open the default mic.</p>
+<ul><li>Linux: install PortAudio (<code>sudo apt install libportaudio2</code>).</li><li>Windows: confirm the mic isn't disabled in System → Sound. Privacy settings → Microphone → "Allow desktop apps" on.</li><li>macOS: grant terminal Microphone permission in System Settings → Privacy.</li></ul>
+<h2>Computer-use clicks miss the target</h2>
+<p>Multi-monitor or HiDPI scaling. Get a known-good baseline:</p>
+<pre><code class="language-bash"># In eVi chat:
+&gt; take a screenshot and read the file path back to me
+&gt; use screen_size to tell me the resolution</code></pre>
+<p>Coordinates are pixels on the <strong>primary</strong> display. For non-primary monitors or fractional scaling, you may need to compute offsets manually.</p>
+<h2>Tests hang or fail with "git: unknown switch -b"</h2>
+<p>Your git is &lt;2.28. Upgrade:</p>
+<pre><code class="language-powershell">winget install --id Git.Git -e</code></pre>
+<p>The worktree tests use <code>git -c init.defaultBranch=main init</code> as a broader-compat fallback, so they should pass on git ≥2.5.</p>
+<h2>"ImportError: cannot import name 'X' from 'evi.…'" after pulling new code</h2>
+<p>You're running the editable install but Python is caching old bytecode. Either delete <code>__pycache__</code> dirs:</p>
+<pre><code class="language-bash">find . -name __pycache__ -exec rm -rf {} +</code></pre>
+<p>…or just <code>pip install -e .</code> again to refresh metadata.</p>
+<h2>Where to dig deeper</h2>
+<ul><li>The session transcripts: <code>~/.evi/transcripts/&lt;today&gt;/&lt;session&gt;.jsonl</code></li><li>Tool/hook stdout via <code>~/.evi/logs/</code></li><li>Dream audit logs: <code>~/.evi/logs/dreams/</code></li><li>Scheduled task logs: <code>~/.evi/logs/scheduled/</code></li><li>LM Studio / Ollama have their own terminal output — keep them visible during dev.</li></ul>
+    </article>
+    <a class="doc-source" href="https://github.com/evi-assistant/evi-ai/blob/main/docs/troubleshooting.md">Edit on GitHub ↗</a>
+  </main>
+  <footer class="doc-foot">
+    <a href="index.html">← All documentation</a>
+    <span>eVi — local-first personal AI assistant</span>
+  </footer>
+</body>
+</html>

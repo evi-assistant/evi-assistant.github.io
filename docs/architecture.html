@@ -1,0 +1,114 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Architecture — eVi docs</title>
+  <meta name="description" content="A walk through how eVi&#x27;s pieces fit together. Read this once when you join the project; refer back to the per-module docs when you need detail. — eVi documentation." />
+  <link rel="stylesheet" href="../styles.css" />
+  <link rel="stylesheet" href="docs.css" />
+  <link rel="icon" href="../favicon.svg" type="image/svg+xml" />
+</head>
+<body>
+  <header class="nav">
+    <a class="brand" href="../index.html" aria-label="eVi home">
+      <span class="brand-mark">e<span class="brand-accent">Vi</span></span>
+    </a>
+    <nav class="nav-links">
+      <a href="index.html">Docs</a>
+      <a href="../index.html#install">Install</a>
+      <a href="../index.html#download">Download</a>
+      <a class="nav-gh" href="https://github.com/evi-assistant/evi-ai">GitHub ↗</a>
+    </nav>
+  </header>
+  <main class="doc-main">
+    <article class="doc">
+<h1>Architecture</h1>
+<p>A walk through how eVi's pieces fit together. Read this once when you join the project; refer back to the per-module docs when you need detail.</p>
+<h2>One core, three frontends</h2>
+<pre><code>          CLI (evi/apps/cli/main.py)
+                    │
+        Web (evi/apps/web/server.py)─── browser (evi/apps/web/static/)
+                    │
+       Desktop (desktop/) ──────────── Tauri webview → Web UI
+                    │
+                    ▼
+        ┌─────────────────────┐
+        │       evi.Agent     │   evi/llm/agent.py
+        │  ┌───────────────┐  │
+        │  │ system prompt │  │   composed from base + memory + skills + project
+        │  ├───────────────┤  │
+        │  │  chat history │  │
+        │  ├───────────────┤  │
+        │  │ tool dispatch │  │   permission → hooks → tool.call → hooks
+        │  └───────────────┘  │
+        └────┬───────┬────────┘
+             │       │
+             ▼       ▼
+     ┌──────────┐ ┌──────────────────────────────┐
+     │ Backend  │ │  Tool registry               │
+     │ (OpenAI- │ │  evi.tools.base.REGISTRY     │
+     │ compat   │ │  decorator builds JSON-schema │
+     │ chat)    │ │  from type hints              │
+     └──────────┘ └──────────────────────────────┘</code></pre>
+<p>The three frontends create <em>their own</em> <code>Agent</code> instance; nothing is shared in-process across frontends. The web UI keeps one <code>Agent</code> per <code>session_id</code> in a dict; the CLI has one per <code>evi chat</code> invocation; Tauri runs the same web server underneath, so it gets web-mode sessions.</p>
+<h2>The agent loop</h2>
+<p><code>Agent.chat(user_msg)</code> is a generator that yields <code>Event</code>s (<code>TextDelta</code>, <code>ToolCall</code>, <code>ToolResult</code>, <code>Done</code>, <code>Error</code>). Each turn:</p>
+<ol><li>Optionally prepend a <code>[ongoing goal: …]</code> reminder if <code>agent.goal</code> is set.</li><li>Optionally append a plan-only suffix and pass <code>tools=None</code> if <code>plan_mode_once</code> is set.</li><li>Open an OpenAI streaming completion against the configured backend.</li><li>As deltas arrive: text → <code>TextDelta</code>, tool-call deltas accumulate.</li><li>If the model finishes with tool calls, dispatch each through <code>_invoke_tool</code>: permission check → before-hooks (may veto) → tool call → after-hooks → result back to the LLM. Loop.</li><li>Else yield <code>Done</code>.</li></ol>
+<p>Per-turn cap: <code>max_turns=6</code> for the main agent, <code>max_turns=8</code> for the dream agent. Prevents tool-call ping-pong loops.</p>
+<h2>System prompt composition</h2>
+<p><code>Agent._compose_system_prompt()</code> stitches together:</p>
+<ol><li>The base prompt ("You are eVi, …").</li><li><code>## Memory index</code> — one-line summaries of every entry in <code>~/.evi/memory/</code>. Pulled live so dreaming + manual edits show up.</li><li><code>## Available skills</code> — name + description of every <code>~/.evi/skills/&lt;name&gt;/SKILL.md</code>. The body is loaded on demand via the <code>invoke_skill</code> tool.</li><li><code>## Project context (&lt;path&gt;)</code> — full body of the nearest <code>EVI.md</code> walking up from cwd.</li></ol>
+<p>Refreshed on <code>Agent.__init__</code> and <code>Agent.reset()</code>. Not refreshed mid-turn — if you edit memory while a session is running, the new state appears on the next turn.</p>
+<h2>Tool framework</h2>
+<pre><code class="language-python">@tool(description="Read a UTF-8 text file.", category="fs")
+def read_file(path: str) -&gt; str:
+    return Path(path).read_text(encoding="utf-8")</code></pre>
+<p>The decorator inspects the function's type hints and docstring, builds an OpenAI-shaped JSON schema, and registers a <code>Tool</code> dataclass in <code>REGISTRY</code>. The agent passes <code>[t.openai_schema() for t in tools]</code> to the LLM each turn.</p>
+<p>Tool <em>categories</em> govern:</p>
+<ul><li>Whether the tool is enabled (<code>tools.&lt;category&gt;</code> in <code>config.toml</code>)</li><li>Whether tool calls auto-approve (<code>auto.auto_approve</code> list)</li></ul>
+<p>New tool? Decorate a function with <code>@tool(category="…")</code>, import the module from <code>evi/apps/cli/main.py</code> and <code>evi/apps/web/server.py</code> for the side effect, add a config toggle if you want one.</p>
+<h2>Permission flow</h2>
+<p><code>Agent.permission_callback: (name, args_json, category) → bool</code>.</p>
+<p>If the tool's category is in <code>auto.auto_approve</code> (or <code>auto_all</code> is set for the session), the callback is skipped. Otherwise it's invoked synchronously inside <code>_invoke_tool</code>. Returning <code>False</code> surfaces <code>"PERMISSION DENIED"</code> as the tool result; the model adapts on the next turn.</p>
+<p><strong>CLI</strong>: callback is <code>_cli_permission_prompt</code> which uses <code>console.input</code>.</p>
+<p><strong>Web</strong>: callback runs on a worker thread (the agent loop is sync). It generates a <code>decision_id</code>, pushes a <code>PermissionRequest</code> SSE event with it, and blocks on a <code>threading.Event</code>. The browser POSTs to <code>/api/decide</code>; the endpoint flips the event; the worker unblocks.</p>
+<p><strong>Scheduler / scripted runs</strong>: no callback set → default-allow.</p>
+<h2>Backends</h2>
+<p><code>evi.backends.Backend</code> is the ABC. Four implementations:</p>
+<table><thead><tr><th>Kind</th><th>Chat?</th><th>Model listing</th><th>Pull API</th></tr></thead><tbody><tr><td><code>lmstudio</code></td><td>✅</td><td><code>/v1/models</code></td><td>❌</td></tr><tr><td><code>ollama</code></td><td>✅</td><td><code>/api/tags</code> (rich)</td><td>✅ (<code>/api/pull</code> streaming)</td></tr><tr><td><code>llamacpp</code></td><td>✅</td><td><code>/v1/models</code> (one loaded)</td><td>❌</td></tr><tr><td><code>openai_compat</code></td><td>✅</td><td>best-effort</td><td>❌</td></tr></tbody></table>
+<p><code>get_backend(settings)</code> dispatches by <code>llm.backend</code> string. The chat client is OpenAI-SDK across all four; model-management methods on non-Ollama backends raise <code>NotImplementedError</code> and the CLI tells the user to use <code>hf:&lt;repo&gt;</code> direct downloads instead.</p>
+<h2>Storage layout (<code>~/.evi/</code>)</h2>
+<pre><code>config.toml         primary config; profiles overlay this
+profiles/*.toml     per-machine overlays selected by EVI_PROFILE / --profile
+memory/             markdown notes, .attic/ holds soft-deleted
+skills/&lt;name&gt;/      SKILL.md + skill-local assets
+commands/&lt;name&gt;.md  user-defined slash command templates with {args}
+scheduled/&lt;id&gt;.json one file per saved scheduled prompt
+hooks.toml          before/after_tool_call hook entries
+mcp.json            MCP server launch configs
+images/             ComfyUI output cache
+models/             huggingface_hub downloads
+screenshots/        computer-use screenshots
+transcripts/&lt;day&gt;/&lt;session&gt;.jsonl   session logs feeding the dream engine
+logs/dreams/        per-dream audit logs
+logs/scheduled/     per-task run logs</code></pre>
+<h2>Subagents</h2>
+<p><code>evi.llm.subagent.run_subagent(...)</code> builds a scoped <code>Agent</code> with a focused system prompt and a restricted tool category set, runs it to completion, returns concatenated text plus a brief tool trace. Used by:</p>
+<ul><li><code>evi/tools/subagent.py</code> — <code>delegate_explore</code> (fs only) and <code>delegate_plan</code> (no tools) tools the main agent can call.</li><li><code>evi/dream.py</code> — the dream agent itself is a subagent with category <code>("memory", "fs")</code> and the dream system prompt.</li></ul>
+<h2>Lifecycles</h2>
+<p><strong>MCP</strong> — CLI lazy-starts on first <code>_build_agent</code>, <code>atexit</code> cleans up. Web starts it inside the FastAPI lifespan context.</p>
+<p><strong>Scheduler</strong> — CLI: <code>evi scheduler</code> runs as a foreground daemon. Web: also starts in the lifespan so <code>evi web</code> covers chat + scheduled jobs in one process.</p>
+<p><strong>Tauri desktop</strong> — Two modes:</p>
+<ul><li>Local (default): spawns <code>py -3.13 -m uvicorn evi.apps.web.server:app</code> as a child, polls <code>/api/health</code>, opens webview at the local port.</li><li>Remote (<code>EVI_REMOTE_URL</code> set): skips the spawn, just navigates.</li></ul>
+<h2>Testing</h2>
+<p><code>pytest</code> against the in-process <code>Agent</code> with stubbed <code>OpenAI</code> clients + <code>httpx.MockTransport</code> for HTTP boundaries. Web tests use Starlette's <code>TestClient</code>; permission-flow integration is unit-tested instead of end-to-end because TestClient buffers SSE responses.</p>
+    </article>
+    <a class="doc-source" href="https://github.com/evi-assistant/evi-ai/blob/main/docs/architecture.md">Edit on GitHub ↗</a>
+  </main>
+  <footer class="doc-foot">
+    <a href="index.html">← All documentation</a>
+    <span>eVi — local-first personal AI assistant</span>
+  </footer>
+</body>
+</html>

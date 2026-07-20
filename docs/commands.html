@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Slash commands — eVi docs</title>
+  <meta name="description" content="Type / at the start of a message to run a command (in the REPL or the web chat). Built-ins cover the session controls — /help, /model, /effort, /fast, /plan, /auto, /goal, /compact… — eVi documentation." />
+  <link rel="stylesheet" href="../styles.css" />
+  <link rel="stylesheet" href="docs.css" />
+  <link rel="icon" href="../favicon.svg" type="image/svg+xml" />
+</head>
+<body>
+  <header class="nav">
+    <a class="brand" href="../index.html" aria-label="eVi home">
+      <span class="brand-mark">e<span class="brand-accent">Vi</span></span>
+    </a>
+    <nav class="nav-links">
+      <a href="index.html">Docs</a>
+      <a href="../index.html#install">Install</a>
+      <a href="../index.html#download">Download</a>
+      <a class="nav-gh" href="https://github.com/evi-assistant/evi-ai">GitHub ↗</a>
+    </nav>
+  </header>
+  <main class="doc-main">
+    <article class="doc">
+<h1>Slash commands</h1>
+<blockquote><p>Quick reference. For the <strong>full guide</strong> — every built-in with its arguments, the web/desktop subset, aliases, and worked examples — see <a href="features-slash-commands.html" target="_blank" rel="noopener">features/slash-commands.md</a>.</p></blockquote>
+<p>Type <code>/</code> at the start of a message to run a command (in the REPL or the web chat). Built-ins cover the session controls — <code>/help</code>, <code>/model</code>, <code>/effort</code>, <code>/fast</code>, <code>/plan</code>, <code>/auto</code>, <code>/goal</code>, <code>/compact</code>, <code>/reset</code>, <code>/tools</code>, <code>/json</code>, <code>/notools</code>, <code>/forcetool</code>, <code>/image</code>, <code>/audio</code>, <code>/reload</code>. Run <code>/help</code> for the full list.</p>
+<h2>Custom commands</h2>
+<p>Drop a markdown file at <code>~/.evi/commands/&lt;name&gt;.md</code> and it becomes <code>/&lt;name&gt;</code>. The file's contents are sent as your next message, after substitution. Modelled on <a href="https://code.claude.com/docs/en/commands" target="_blank" rel="noopener">Claude Code's custom commands</a>.</p>
+<h3>Frontmatter (optional)</h3>
+<pre><code class="language-markdown">---
+description: Draft a conventional-commit message
+argument-hint: [scope]
+model: qwen2.5-coder:14b-instruct-q4_K_M
+---
+Look at the staged diff and write a commit message for $ARGUMENTS.</code></pre>
+<ul><li><code>description</code> — shown in <code>/help</code>.</li><li><code>argument-hint</code> — documents the expected arguments.</li><li><code>model</code> — surfaced to the UI as the command's preferred model.</li></ul>
+<h3>Arguments</h3>
+<ul><li><code>$ARGUMENTS</code> — everything typed after the command name.</li><li><code>$1</code>, <code>$2</code>, … <code>$9</code> — positional args (shell-split; quote to group: <code>/review "two words" tail</code> → <code>$1</code> = <code>two words</code>).</li><li><code>{args}</code> — legacy alias for <code>$ARGUMENTS</code> (still works).</li></ul>
+<p><code>/commit auth</code> with the file above sends: <em>"Look at the staged diff and write a commit message for auth."</em></p>
+<h3>File references</h3>
+<p><code>@path/to/file</code> inlines that file's contents (fenced) if it exists — handy for templates that should always include a checklist or style guide. Tokens that aren't readable files (emails, <code>@handles</code>) are left untouched.</p>
+<h3>Namespacing</h3>
+<p>Subdirectories become <code>:</code>-separated names: <code>~/.evi/commands/git/commit.md</code> → <code>/git:commit</code>.</p>
+<h3>Not supported</h3>
+<p><code>!bash</code> execution blocks are intentionally <strong>not</strong> run — auto-executing shell on command expansion is too sharp an edge for eVi's permission model. Use a tool (with its permission prompt) or a <a href="tools.html" target="_blank" rel="noopener">Skill</a> for anything that needs to run code.</p>
+    </article>
+    <a class="doc-source" href="https://github.com/evi-assistant/evi-ai/blob/main/docs/commands.md">Edit on GitHub ↗</a>
+  </main>
+  <footer class="doc-foot">
+    <a href="index.html">← All documentation</a>
+    <span>eVi — local-first personal AI assistant</span>
+  </footer>
+</body>
+</html>

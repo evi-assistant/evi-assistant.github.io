@@ -1,0 +1,92 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Desktop bundling — eVi docs</title>
+  <meta name="description" content="How the Tauri desktop app is built, and how to make it a standalone installer that doesn&#x27;t need Python on the target machine. — eVi documentation." />
+  <link rel="stylesheet" href="../styles.css" />
+  <link rel="stylesheet" href="docs.css" />
+  <link rel="icon" href="../favicon.svg" type="image/svg+xml" />
+</head>
+<body>
+  <header class="nav">
+    <a class="brand" href="../index.html" aria-label="eVi home">
+      <span class="brand-mark">e<span class="brand-accent">Vi</span></span>
+    </a>
+    <nav class="nav-links">
+      <a href="index.html">Docs</a>
+      <a href="../index.html#install">Install</a>
+      <a href="../index.html#download">Download</a>
+      <a class="nav-gh" href="https://github.com/evi-assistant/evi-ai">GitHub ↗</a>
+    </nav>
+  </header>
+  <main class="doc-main">
+    <article class="doc">
+<h1>Desktop bundling</h1>
+<p>How the Tauri desktop app is built, and how to make it a <strong>standalone</strong> installer that doesn't need Python on the target machine.</p>
+<h2>Two run modes (no rebuild needed)</h2>
+<p>The Rust shell (<code>desktop/src-tauri/src/main.rs</code>) decides at launch:</p>
+<ol><li><strong>Remote</strong> — if <code>EVI_REMOTE_URL</code> is set, it skips spawning anything and loads that URL. The desktop app is a thin window onto a server you run elsewhere.</li><li><strong>Local</strong> — otherwise it starts a local server and points the webview at it. In local mode it prefers, in order:<ul><li>a <strong>bundled sidecar</strong> binary named <code>evi-server[.exe]</code> sitting next to the app executable (the standalone path — no Python needed), else</li><li><strong>system Python</strong>: <code>python -m uvicorn evi.apps.web.server:app</code> from the repo root (the developer / source-checkout path; needs <code>evi-assistant[web]</code> installed).</li></ul></li></ol>
+<p>So the <em>same</em> app binary works as a thin shell over system Python <strong>and</strong> as a standalone app — it just depends on whether a sidecar was bundled.</p>
+<h2>Default build (thin client / dev — no sidecar)</h2>
+<pre><code>cd desktop
+npm install
+npm run build       # → installer under src-tauri/target/release/bundle/</code></pre>
+<p>This installer still needs Python 3.13+ and <code>pip install evi-assistant[web]</code> on the target machine (local mode falls back to system Python). Good for your own machines.</p>
+<h2>Standalone build (embeds a frozen server)</h2>
+<p>Two steps, both <strong>on the OS you're targeting</strong> (PyInstaller and Tauri do not cross-compile — build the Windows app on Windows, the macOS app on macOS, etc.):</p>
+<h3>1. Freeze the server into a sidecar</h3>
+<pre><code># Build from an ISOLATED venv — see the warning below.
+python -m venv .venv-build         # py -3.13 -m venv .venv-build on Windows
+.venv-build/bin/pip install -e '.[web,pdf,index,build-desktop]'
+scripts/build-sidecar.sh          # or scripts\build-sidecar.ps1 on Windows</code></pre>
+<blockquote><p><strong>⚠ Build from an isolated venv, not your fat dev <code>.venv</code>.</strong> The build scripts pass <code>--collect-submodules evi</code>, which pulls <em>every</em> <code>evi.tools.*</code> module into the analysis. If your <code>.venv</code> has the <code>stt</code>/<code>computer</code>/<code>rerank</code> extras installed, that drags <strong>torch + faster-whisper + sounddevice + av</strong> into the supposedly-"practical" sidecar and balloons it from ~128 MB to</p>
+<blockquote><p>1 GB. <code>build-sidecar.{ps1,sh}</code> therefore prefer a <strong><code>.venv-build</code></strong> if one</p></blockquote>
+<p>exists (then <code>.venv</code>, then system Python). Create <code>.venv-build</code> with only <code>web,pdf,index,build-desktop</code> installed and the sidecar stays lean.</p></blockquote>
+<p>This runs PyInstaller over <code>scripts/sidecar_entry.py</code> (which imports the FastAPI <code>app</code> object directly and runs uvicorn) in <strong><code>--onedir</code></strong> mode, producing a <code>dist/evi-server/</code> <strong>folder</strong> (<code>evi-server[.exe]</code> + <code>_internal/</code>), then stages the whole folder at <code>desktop/src-tauri/binaries/evi-server/</code> for Tauri's <code>bundle.resources</code>.</p>
+<blockquote><p><strong>Why onedir, not onefile.</strong> A <code>--onefile</code> exe self-extracts ~70 MB to a temp dir on <em>every</em> launch, which cost ~13–16 s of cold start. <code>--onedir</code> runs in place, so the app window appears in ~2–3 s. The trade-off is shipping a folder instead of one file — handled transparently by <code>bundle.resources</code> (below).</p></blockquote>
+<blockquote><p><strong>Scope — the "practical" tier.</strong> The sidecar bundles <strong>web + pdf + index</strong> Python deps, so chat, tools, image-gen, the web UI, PDF reading, and semantic search all work with no Python on the target machine. Deliberately left out (opt-in via a system Python, to keep the binary ~150–250 MB and dodge native-dep pain): <strong>STT</strong> (<code>faster-whisper</code> + PortAudio) and <strong>computer-use</strong> (<code>pyautogui</code>). A couple of models still download on first use regardless — the embedding model (from your backend) and, if you add STT later, the Whisper model.</p></blockquote>
+<h3>1b. (optional) Bundle Tesseract for offline OCR</h3>
+<p>Tesseract is an external <strong>binary</strong>, not a Python dep — PyInstaller can't freeze it. To make OCR work in the standalone app, stage the binary + its <code>tessdata</code> next to the sidecar:</p>
+<pre><code>desktop/src-tauri/binaries/
+    evi-server-&lt;triple&gt;          # the frozen server
+    tesseract[.exe]              # the OCR binary for THIS os
+    tessdata/eng.traineddata     # language data</code></pre>
+<p>At launch the Rust shell detects <code>tesseract[.exe]</code> next to the sidecar and sets <code>EVI_TESSERACT_CMD</code> (+ <code>TESSDATA_PREFIX</code> if <code>tessdata/</code> is present) for the server process; <code>evi/tools/ocr.py</code> honours those. Acquiring a portable tesseract is OS-specific (no clean universal zip) — grab it from your package manager's install dir, or <code>evi-tools install tesseract</code> then copy <code>~/.evi/tools/bin/tesseract</code>. If you skip this step the app still runs; OCR just reports tesseract missing.</p>
+<h3>2. Build the app with the sidecar merged in</h3>
+<pre><code>cd desktop
+npm run tauri build -- --config src-tauri/tauri.standalone.conf.json</code></pre>
+<p><code>tauri.standalone.conf.json</code> is a small overlay that adds <code>bundle.resources</code> shipping the staged <code>binaries/evi-server/</code> folder. It's kept <strong>separate</strong> from the default <code>tauri.conf.json</code> on purpose: declaring the resource bundle there would make the plain <code>npm run build</code> fail whenever a sidecar hasn't been frozen. Tauri unpacks the folder under the app's resource dir at install time; <code>main.rs</code> resolves the binary from <code>resource_dir()</code> (<code>&lt;resources&gt;/evi-server/evi-server[.exe]</code>), with adjacent-exe fallbacks for the dev/staged layouts.</p>
+<h2>Toolchain setup (Windows, no-admin friendly)</h2>
+<p>The Tauri build needs Rust + Node + the <strong>MSVC C++ Build Tools</strong> (Rust's linker on Windows) + WebView2 (preinstalled on Win10+). On a non-admin box you can get most of it without elevation:</p>
+<pre><code class="language-powershell"># Node (portable zip, no admin) — extract a win-x64 zip from nodejs.org to
+#   %LOCALAPPDATA%\node-lts and add it to your user PATH.
+# Rust (per-user, no admin):
+#   download https://win.rustup.rs/x86_64 → rustup-init.exe
+rustup-init.exe -y --default-toolchain stable --default-host x86_64-pc-windows-msvc --profile minimal
+# Tauri CLI:
+cd desktop ; npm install</code></pre>
+<p>The <strong>MSVC C++ Build Tools require admin</strong> — run this in an elevated shell (this is the one step that needs it):</p>
+<pre><code class="language-powershell">winget install Microsoft.VisualStudio.2022.BuildTools --accept-package-agreements --accept-source-agreements --override "--quiet --wait --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended"
+# …or download https://aka.ms/vs/17/release/vs_BuildTools.exe and run it with
+#   --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended</code></pre>
+<p><code>npx tauri info</code> reports exactly what's present/missing — use it to confirm before building.</p>
+<h2>Verification status</h2>
+<ul><li><strong>0.22.0 — verified end-to-end on Windows (2026-06-06).</strong> Switched to <code>--onedir</code> + <code>bundle.resources</code>. Rebuilt the sidecar from an isolated <code>.venv-build</code> (127.9 MB; <code>evi-server --check</code> passes including <code>python_multipart</code>), built both installers (<code>eVi_0.1.0_x64_en-US.msi</code> 59.5 MB, <code>eVi_0.1.0_x64-setup.exe</code> 46.0 MB), and confirmed the built <code>evi-desktop.exe</code> resolves + spawns the sidecar, which serves <code>/api/health</code> 200 and the no-backend banner on a free port. Toolchain: Rust stable 1.96, MSVC BuildTools 2022, Tauri CLI 2.11, WebView2 148. (Installers are smaller than the 0.21.x onefile ones because the onedir folder's many small Python files compress better in MSI/NSIS.)</li><li><strong>Sidecar build: verified on Windows (2026-05-29).</strong> <code>scripts/build-sidecar.ps1</code> froze a working 72.7 MB <code>evi-server.exe</code> (practical tier: web+pdf+index). <code>evi-server.exe --check</code> loads all bundled deps (<code>fitz</code>, <code>numpy</code>, uvicorn protocols) and the server boots + answers <code>/api/health</code>. No PyInstaller flag tuning was needed beyond the <code>--collect-all pymupdf/numpy</code> + <code>--hidden-import fitz</code> already in the script.</li><li><strong>Tauri app build: verified end-to-end on Windows (2026-05-29).</strong> After installing the MSVC C++ Build Tools, `npm run tauri build -- --config src-tauri/tauri.standalone.conf.json` compiled (469 crates), linked, and produced both installers with the <code>evi-server</code> sidecar embedded: <code>eVi_0.1.0_x64_en-US.msi</code> (~79 MB) and <code>eVi_0.1.0_x64-setup.exe</code> (NSIS, ~78 MB). Two fixes were needed and are now in the repo:<ul><li><code>Cargo.toml</code> declared a <code>[lib] evi_desktop_lib</code> with no <code>src/lib.rs</code> (leftover from the create-tauri-app mobile template) — removed; it's a plain binary crate.</li><li><code>tauri.conf.json</code> <code>bundle.icon</code> listed only <code>icon.png</code>; the Windows resource + WiX/NSIS bundlers need an <code>.ico</code>. Generated the full icon set with <code>npm run tauri icon</code> (from <code>icons/source.png</code>) and pointed <code>bundle.icon</code> at the standard 32/128/128@2x/icns/ico list.</li></ul></li></ul>
+<h2>Size + signing notes</h2>
+<ul><li>Expect ~80–150 MB per sidecar (Python runtime + fastapi/uvicorn/pydantic<ul><li>evi). We ship <strong><code>--onedir</code></strong> (a folder, not one file): onefile binaries</li></ul> self-extract to a temp dir on <em>every</em> launch, which cost ~13–16 s here — onedir runs in place in ~2–3 s. The build scripts already use onedir.</li><li>Code signing / notarization (macOS) and Authenticode (Windows) are out of scope here but required for friction-free distribution — wire them into the Tauri bundler config when you have certificates.</li></ul>
+<h2>All-Python fallback: pywebview</h2>
+<p>The Tauri shell is the shipped desktop app, but building it needs the full Rust + Node + MSVC toolchain. If you only want a desktop <strong>window</strong> around the web UI without that toolchain, <strong><a href="https://pywebview.flowrl.com/" target="_blank" rel="noopener">pywebview</a></strong> is an all-Python alternative: start <code>evi web</code> on a local port and point a <code>webview.create_window(...)</code> at <code>http://127.0.0.1:&lt;port&gt;</code>. It uses the OS WebView (WebView2/WebKit), so the result is lightweight, but it is <em>not</em> a distributable installer — it still needs Python + <code>evi-assistant[web]</code> on the machine. Treat it as a dev/personal-use convenience, not a replacement for the standalone Tauri build.</p>
+<h2>Backend discovery in the standalone app</h2>
+<p>The bundled server does <strong>not</strong> bundle an LLM — it talks to whatever local backend is running. Two pieces make that robust on a fresh machine:</p>
+<ul><li><strong>llama.cpp port fallback.</strong> llama.cpp defaults to <code>:8080</code>; when that's taken people bump to the next free port. <code>evi/portprobe.py</code>'s <code>discover_llamacpp_url</code> scans <code>8080..8090</code> and the llama.cpp backend (<code>discover_ports=True</code>) auto-picks the one actually serving an OpenAI-shaped <code>/v1/models</code>, so a busy default port doesn't hide it.</li><li><strong>No-backend UX.</strong> If nothing answers, the web UI shows a "⚠ No local LLM backend" banner with Start / Install / Recheck actions (see <code>GET /api/backend/status</code>) rather than failing silently — important in the standalone app, where the user may not have a backend installed yet.</li></ul>
+    </article>
+    <a class="doc-source" href="https://github.com/evi-assistant/evi-ai/blob/main/docs/desktop-bundling.md">Edit on GitHub ↗</a>
+  </main>
+  <footer class="doc-foot">
+    <a href="index.html">← All documentation</a>
+    <span>eVi — local-first personal AI assistant</span>
+  </footer>
+</body>
+</html>

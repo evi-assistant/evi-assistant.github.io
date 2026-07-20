@@ -1,0 +1,160 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Hooks (tool + lifecycle, command/url) — eVi docs</title>
+  <meta name="description" content="Hooks let you run your own code (or call a webhook) automatically at key moments while eVi works: right before and right after every tool call, and around three lifecycle events in… — eVi documentation." />
+  <link rel="stylesheet" href="../styles.css" />
+  <link rel="stylesheet" href="docs.css" />
+  <link rel="icon" href="../favicon.svg" type="image/svg+xml" />
+</head>
+<body>
+  <header class="nav">
+    <a class="brand" href="../index.html" aria-label="eVi home">
+      <span class="brand-mark">e<span class="brand-accent">Vi</span></span>
+    </a>
+    <nav class="nav-links">
+      <a href="index.html">Docs</a>
+      <a href="../index.html#install">Install</a>
+      <a href="../index.html#download">Download</a>
+      <a class="nav-gh" href="https://github.com/evi-assistant/evi-ai">GitHub ↗</a>
+    </nav>
+  </header>
+  <main class="doc-main">
+    <article class="doc">
+<h1>Hooks (tool + lifecycle, command/url)</h1>
+<h2>Overview</h2>
+<p>Hooks let you run your own code (or call a webhook) automatically at key moments while eVi works: right <strong>before</strong> and right <strong>after</strong> every tool call, and around three <strong>lifecycle</strong> events in a turn. A hook can simply <em>observe</em> (audit a log, fire a desktop notification, POST to a webhook) or it can <em>veto</em> — block a tool call, reject a user prompt, or skip history compaction — based on its own logic.</p>
+<p>Because eVi is local-first and single-user, hooks are your escape hatch for custom policy and integration without touching eVi's source: audit trails, "never write outside this folder" guards, secret-scanners on prompts, Slack/webhook notifications, and so on.</p>
+<p>Hooks live in one file, <code>~/.evi/hooks.toml</code> (Windows: <code>%USERPROFILE%\.evi\hooks.toml</code>), and are loaded fresh at startup. Installed plugins can also ship their own <code>hooks.toml</code>, which is merged in automatically.</p>
+<h2>How it works</h2>
+<p>A hook is an entry in <code>hooks.toml</code> keyed by the <strong>event</strong> it fires on. There are five events:</p>
+<table><thead><tr><th>Event</th><th>When it fires</th><th>Can veto?</th><th>What veto does</th></tr></thead><tbody><tr><td><code>before_tool_call</code></td><td>Before a tool runs</td><td>Yes</td><td>Blocks the tool; the hook's stderr becomes the result the model sees</td></tr><tr><td><code>after_tool_call</code></td><td>After a tool returns</td><td>No</td><td>Veto is ignored (notification only); a non-zero exit is just logged</td></tr><tr><td><code>user_prompt_submit</code></td><td>Before each turn, before the model sees your prompt</td><td>Yes</td><td>Blocks the prompt</td></tr><tr><td><code>before_compact</code></td><td>Before history compaction</td><td>Yes</td><td>Keeps history intact (skips compaction)</td></tr><tr><td><code>stop</code></td><td>After a turn completes</td><td>No</td><td>Notification only; never blocks</td></tr></tbody></table>
+<p><code>before_tool_call</code> and <code>after_tool_call</code> are <strong>tool-scoped</strong>: their <code>match</code> is a glob over the tool name. The three lifecycle events (<code>user_prompt_submit</code>, <code>before_compact</code>, <code>stop</code>) are <strong>not tied to a tool</strong>, so they use <code>match = "*"</code> (the default).</p>
+<p>Each hook does one of two things:</p>
+<ul><li><strong><code>command</code></strong> — an argv list that eVi spawns as a subprocess. It is <strong>not</strong> shell-evaluated; if you want shell features, invoke a shell explicitly (e.g. <code>["bash", "-c", "…"]</code>).</li><li><strong><code>url</code></strong> — eVi sends an HTTP <code>POST</code> with a JSON body instead of spawning anything. A <code>2xx</code> response counts as success (exit code <code>0</code>); any other status becomes the "exit code", so a <code>4xx</code>/<code>5xx</code> from a <code>before_*</code> URL hook with <code>veto_on_nonzero = true</code> blocks the action.</li></ul>
+<p>A hook must define <strong>either</strong> <code>command</code> <strong>or</strong> <code>url</code> (an entry with neither is skipped as malformed).</p>
+<h3>Veto semantics</h3>
+<p>Veto only matters on the three vetoable events and only when the hook sets <code>veto_on_nonzero = true</code>. If such a hook exits non-zero, it vetoes:</p>
+<ul><li><strong>Tool veto</strong> — the call is blocked and the model receives a result like <code>BLOCKED BY HOOK 'no-system-writes': &lt;hook stderr or stdout&gt;</code>.</li><li><strong>Prompt veto</strong> (<code>user_prompt_submit</code>) — the turn is blocked before the model runs.</li><li><strong>Compaction veto</strong> (<code>before_compact</code>) — compaction is skipped, history left intact.</li></ul>
+<p>Multiple hooks for the same event run in order; the <strong>first</strong> vetoing hook wins and stops the rest. Order is: your <code>~/.evi/hooks.toml</code> hooks first, then plugin hooks, so your own rules are evaluated first.</p>
+<p>Permission gating happens <strong>before</strong> before-hooks. So a tool call is first checked against your auto-approve / permission settings, and only if approved does it reach <code>before_tool_call</code> hooks.</p>
+<h3>Environment variables passed to <code>command</code> hooks</h3>
+<p>When eVi spawns a <code>command</code> hook it inherits your environment plus these:</p>
+<table><thead><tr><th>Variable</th><th>Value</th></tr></thead><tbody><tr><td><code>EVI_HOOK_EVENT</code></td><td>The event name (<code>before_tool_call</code>, <code>user_prompt_submit</code>, …)</td></tr><tr><td><code>EVI_HOOK_TOOL</code></td><td>The tool name for tool events; the <strong>event name</strong> for lifecycle events</td></tr><tr><td><code>EVI_HOOK_ARGS_JSON</code></td><td>Tool call arguments as JSON; for <code>user_prompt_submit</code>, the prompt text; for <code>before_compact</code>, the count of messages being compacted</td></tr><tr><td><code>EVI_HOOK_RESULT</code></td><td>Only for <code>after_tool_call</code>: the tool's stringified output, <strong>truncated to 4 KB</strong></td></tr></tbody></table>
+<h3>What a <code>url</code> hook POSTs</h3>
+<p>eVi sends <code>Content-Type: application/json</code>, <code>User-Agent: evi-hook</code>, and a JSON body:</p>
+<pre><code class="language-json">{ "event": "after_tool_call", "tool": "generate_image", "args_json": "{…}", "result": "…" }</code></pre>
+<p><code>result</code> is included only for <code>after_tool_call</code> (and is likewise capped at 4 KB).</p>
+<h2>Setup</h2>
+<p>There are no config flags in <code>config.toml</code> to enable hooks and no pip extras — the feature is always on, driven entirely by the presence of <code>~/.evi/hooks.toml</code>. If the file doesn't exist, no hooks run.</p>
+<p>Create <code>~/.evi/hooks.toml</code>. Each event is a TOML array-of-tables (<code>[[event_name]]</code>). Fields per entry:</p>
+<table><thead><tr><th>Field</th><th>Type</th><th>Default</th><th>Notes</th></tr></thead><tbody><tr><td><code>name</code></td><td>string</td><td>derived from event + match</td><td>Label shown in veto messages / logs</td></tr><tr><td><code>match</code></td><td>string (glob)</td><td><code>"*"</code></td><td>Globs the tool name (tool events only); use <code>"*"</code> for lifecycle events</td></tr><tr><td><code>command</code></td><td>string or list of strings</td><td>—</td><td>argv; a bare string is wrapped to a one-element list, <strong>not</strong> shell-expanded</td></tr><tr><td><code>url</code></td><td>string</td><td><code>""</code></td><td>If set, POST instead of spawning a command</td></tr><tr><td><code>timeout</code></td><td>number (seconds)</td><td><code>30.0</code></td><td>Subprocess / HTTP timeout</td></tr><tr><td><code>veto_on_nonzero</code></td><td>bool</td><td><code>false</code></td><td>Only meaningful for <code>before_*</code> / <code>user_prompt_submit</code> / <code>before_compact</code></td></tr></tbody></table>
+<p>A complete reference file:</p>
+<pre><code class="language-toml"># ~/.evi/hooks.toml
+
+[[before_tool_call]]
+name            = "audit"
+match           = "*"                       # glob over tool names: fs.*, write_file, …
+command         = ["bash", "-c", "echo $EVI_HOOK_TOOL &gt;&gt; ~/.evi/logs/tools.log"]
+timeout         = 5
+
+[[before_tool_call]]
+name            = "no-system-writes"
+match           = "write_file"
+command         = ["bash", "-c", 'echo "$EVI_HOOK_ARGS_JSON" | grep -qv "/etc/"']
+veto_on_nonzero = true                      # non-zero exit blocks the tool
+
+[[after_tool_call]]
+name    = "notify"
+match   = "generate_image"
+command = ["notify-send", "Image ready"]
+
+[[after_tool_call]]
+name    = "webhook"
+match   = "*"
+url     = "https://example.com/evi-hook"    # POST instead of spawning a command
+
+[[user_prompt_submit]]                       # fires before each turn
+name            = "no-secrets"
+command         = ["python3", "/home/me/check_prompt.py"]   # prompt is in EVI_HOOK_ARGS_JSON
+veto_on_nonzero = true
+
+[[before_compact]]                           # before history compaction; veto keeps it intact
+name    = "log-compaction"
+command = ["bash", "-c", "echo compacting &gt;&gt; ~/.evi/logs/compaction.log"]
+
+[[stop]]                                     # after a turn completes (notification; never blocks)
+name    = "ding"
+command = ["notify-send", "eVi finished a turn"]</code></pre>
+<p>Hooks are merged from your <code>hooks.toml</code> plus any <code>hooks.toml</code> shipped by installed plugins. There's no separate <code>evi hooks</code> CLI subcommand — you manage hooks by editing the file. (<code>evi plugin list</code> shows how many hooks each installed plugin contributes.)</p>
+<h2>Usage</h2>
+<p>Hooks aren't invoked by hand — they run automatically once configured. The workflow is:</p>
+<ol><li>Edit <code>~/.evi/hooks.toml</code> (see Setup), or use <strong>Settings → Hooks</strong> / the CLI below.</li><li>Start or restart eVi (<code>evi chat</code>, <code>evi web</code>, the desktop app, or any agent run). Hooks are loaded at process start, so restart after editing to pick up changes.</li><li>Drive eVi normally — hooks fire as tools run and turns progress.</li></ol>
+<h3>CLI — <code>evi hooks</code></h3>
+<pre><code class="language-text">evi hooks path                       # print the config file path
+evi hooks list                       # every loaded hook (yours + plugin), grouped by event
+evi hooks test &lt;tool&gt; [--event …]    # which hooks WOULD fire for a tool name (nothing runs)</code></pre>
+<p><code>hooks test</code> is match-resolution only — it shows the hooks whose <code>match</code> glob hits the tool name and flags the ones that can veto, without executing anything.</p>
+<h3>Web / Desktop — the Hooks editor</h3>
+<p><strong>Settings → Hooks</strong> shows every loaded hook as a chip (event, name, veto flag) above a raw <code>hooks.toml</code> editor. <strong>Save</strong> validates the whole file first — bad TOML, a malformed entry, and crucially <strong>typo'd event names</strong> (e.g. <code>[[before_toolcall]]</code>), which the runtime loader would otherwise skip silently — and reports the error inline instead of writing a broken file. Plugin-supplied hooks appear in the chips but aren't editable here (they live in the plugin). Backed by <code>GET</code>/<code>POST /api/hooks</code>.</p>
+<p>This applies across every front end (CLI REPL, FastAPI/SSE web UI, Tauri desktop) and to headless / workflow runs, since they all load the same <code>HookRegistry</code>.</p>
+<p>Where to watch the effects:</p>
+<ul><li><code>command</code> hooks write wherever you point them (e.g. <code>~/.evi/logs/tools.log</code> in the audit example).</li><li>When a <code>before_tool_call</code> hook vetoes, the model receives a <code>BLOCKED BY HOOK '…': …</code> tool result and typically tells you the action was blocked.</li><li>A vetoed <code>user_prompt_submit</code> stops the turn before the model runs.</li></ul>
+<h2>Examples</h2>
+<h3>Example 1 — Audit every tool call, and block writes to system paths</h3>
+<p>This logs every tool name, and refuses any <code>write_file</code> whose arguments mention <code>/etc/</code>. The guard uses <code>grep -qv</code>: it exits <strong>non-zero</strong> (vetoes) when <code>/etc/</code> <em>is</em> present.</p>
+<pre><code class="language-toml"># ~/.evi/hooks.toml
+
+[[before_tool_call]]
+name    = "audit"
+match   = "*"
+command = ["bash", "-c", "echo \"$(date -Iseconds) $EVI_HOOK_TOOL $EVI_HOOK_ARGS_JSON\" &gt;&gt; ~/.evi/logs/tools.log"]
+timeout = 5
+
+[[before_tool_call]]
+name            = "no-system-writes"
+match           = "write_file"
+command         = ["bash", "-c", 'echo "$EVI_HOOK_ARGS_JSON" | grep -qv "/etc/"']
+veto_on_nonzero = true</code></pre>
+<p>When the model tries to write to <code>/etc/passwd</code>, the guard exits non-zero and the model sees roughly:</p>
+<pre><code>BLOCKED BY HOOK 'no-system-writes': (no message)</code></pre>
+<p>(The bracketed message is the hook's stderr/stdout — empty here because <code>grep -q</code> is silent. Print to stderr in your guard if you want a custom reason shown to the model.)</p>
+<h3>Example 2 — Scan prompts for secrets with a Python script (cross-platform)</h3>
+<p>A <code>user_prompt_submit</code> hook reads the prompt from <code>EVI_HOOK_ARGS_JSON</code> and rejects it if it looks like an API key or password. This works on Windows too, since it spawns Python directly rather than relying on a shell.</p>
+<pre><code class="language-toml"># ~/.evi/hooks.toml
+
+[[user_prompt_submit]]
+name            = "no-secrets"
+command         = ["python3", "C:/Users/me/.evi/check_prompt.py"]
+veto_on_nonzero = true</code></pre>
+<pre><code class="language-python"># C:/Users/me/.evi/check_prompt.py
+import os, re, sys
+
+prompt = os.environ.get("EVI_HOOK_ARGS_JSON", "")
+if re.search(r"(?i)(api[_-]?key|secret|password)\s*[:=]\s*\S", prompt):
+    print("Prompt looks like it contains a secret; blocked.", file=sys.stderr)
+    sys.exit(1)   # non-zero + veto_on_nonzero -&gt; the turn is blocked
+sys.exit(0)</code></pre>
+<h3>Example 3 — Webhook notification (no command spawned)</h3>
+<p>POST a JSON payload to an external endpoint after any tool runs. No subprocess, no shell — eVi makes the HTTP call itself.</p>
+<pre><code class="language-toml"># ~/.evi/hooks.toml
+
+[[after_tool_call]]
+name    = "webhook"
+match   = "*"
+url     = "https://hooks.example.com/evi"
+timeout = 10</code></pre>
+<p>The endpoint receives <code>POST</code> with body <code>{"event": "after_tool_call", "tool": "&lt;name&gt;", "args_json": "&lt;json&gt;", "result": "&lt;≤4 KB output&gt;"}</code>. To use the same mechanism as a <em>gate</em>, attach <code>url</code> + <code>veto_on_nonzero = true</code> to a <code>[[before_tool_call]]</code>: a <code>4xx</code>/<code>5xx</code> response then blocks the call.</p>
+<h2>Notes / limits</h2>
+<ul><li><strong>Fail-open by design.</strong> A missing or malformed <code>hooks.toml</code> is treated as "no hooks", not an error. One bad entry is skipped with a warning while the rest load. Plugin-hook scanning failures never break your core hooks. Lifecycle hook execution is wrapped so that exceptions return "no veto" rather than crashing the turn.</li><li><strong>Commands are not shell-evaluated.</strong> <code>command</code> is argv. A bare-string <code>command</code> becomes a one-element argv list — it is <strong>not</strong> split on spaces or expanded. For pipes, globs, redirects, or <code>$VAR</code> expansion, call a shell explicitly (<code>["bash", "-c", "…"]</code>) — note this means <code>bash</code>-based examples need a shell available (use the Python form on Windows).</li><li><strong>Timeouts.</strong> Default <code>timeout</code> is <code>30.0</code> seconds (subprocess or HTTP). A timed-out hook reports exit code <code>124</code>; a command that fails to exec reports <code>126</code>. For a vetoing before-hook, a timeout therefore counts as a non-zero exit and <strong>blocks</strong> the action — keep guard hooks fast and set a tight <code>timeout</code>.</li><li><strong><code>after_tool_call</code> and <code>stop</code> never block.</strong> Their veto is ignored; a non-zero <code>after_tool_call</code> exit is only logged.</li><li><strong>4 KB result cap.</strong> <code>EVI_HOOK_RESULT</code> (and the <code>result</code> field in a URL POST) is truncated to 4 KB to avoid blowing OS env/arg limits. Don't rely on receiving the full tool output.</li><li><strong>Permission first, then hooks.</strong> Tool calls pass through eVi's permission / auto-approve gate before before-hooks run; a denied tool never reaches a hook.</li><li><strong><code>EVI_HOOK_TOOL</code> for lifecycle events is the event name</strong>, not a tool — there is no tool involved. For tool events it's the fully-qualified tool name (e.g. <code>write_file</code>, or <code>&lt;server&gt;.&lt;tool&gt;</code> for MCP tools).</li><li><strong>Security.</strong> Hooks run arbitrary local commands with your user's privileges and full environment. Treat plugin-supplied <code>hooks.toml</code> files as code: review a plugin's hooks before installing it, since its hooks are merged into your registry and execute on every matching event.</li><li><strong>Reload requires a restart.</strong> Hooks are loaded once at process start; edits to <code>hooks.toml</code> take effect on the next launch.</li><li>See also the concise summaries in <a href="https://github.com/evi-assistant/evi-ai/blob/main/docs/features/configuration.md#hooks--evihookstoml" target="_blank" rel="noopener">docs/configuration.md</a> and <a href="https://github.com/evi-assistant/evi-ai/blob/main/docs/features/features.md#hooks" target="_blank" rel="noopener">docs/features.md</a>. The authoritative behavior is in <code>evi/hooks.py</code>.</li></ul>
+    </article>
+    <a class="doc-source" href="https://github.com/evi-assistant/evi-ai/blob/main/docs/features/hooks.md">Edit on GitHub ↗</a>
+  </main>
+  <footer class="doc-foot">
+    <a href="index.html">← All documentation</a>
+    <span>eVi — local-first personal AI assistant</span>
+  </footer>
+</body>
+</html>

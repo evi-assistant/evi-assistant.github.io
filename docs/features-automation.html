@@ -1,0 +1,175 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Recipes, Routines, Scheduled tasks, Channels — eVi docs</title>
+  <meta name="description" content="These four features make up eVi&#x27;s automation surface. They let you save reusable workflows, fire them over HTTP, run prompts on a cron schedule, and push outside alerts into a live… — eVi documentation." />
+  <link rel="stylesheet" href="../styles.css" />
+  <link rel="stylesheet" href="docs.css" />
+  <link rel="icon" href="../favicon.svg" type="image/svg+xml" />
+</head>
+<body>
+  <header class="nav">
+    <a class="brand" href="../index.html" aria-label="eVi home">
+      <span class="brand-mark">e<span class="brand-accent">Vi</span></span>
+    </a>
+    <nav class="nav-links">
+      <a href="index.html">Docs</a>
+      <a href="../index.html#install">Install</a>
+      <a href="../index.html#download">Download</a>
+      <a class="nav-gh" href="https://github.com/evi-assistant/evi-ai">GitHub ↗</a>
+    </nav>
+  </header>
+  <main class="doc-main">
+    <article class="doc">
+<h1>Recipes, Routines, Scheduled tasks, Channels</h1>
+<p>These four features make up eVi's <strong>automation</strong> surface. They let you save reusable workflows, fire them over HTTP, run prompts on a cron schedule, and push outside alerts into a live conversation — all while staying local-first and single-user.</p>
+<h2>Overview</h2>
+<table><thead><tr><th>Feature</th><th>What it is</th><th>Where it lives</th></tr></thead><tbody><tr><td><strong>Recipes</strong></td><td>A saved, ordered list of prompts that run through <strong>one shared conversation</strong>, so later steps can build on earlier answers.</td><td><code>~/.evi/recipes/*.toml</code></td></tr><tr><td><strong>Routines</strong></td><td>A recipe bound to an unguessable webhook token. <code>POST /api/routine/&lt;token&gt;</code> runs the recipe headless, so an external service can kick off an eVi workflow over HTTP.</td><td><code>~/.evi/routines.json</code></td></tr><tr><td><strong>Scheduled tasks</strong></td><td>A saved prompt (or an eval suite) plus a cron expression. A background scheduler fires it on schedule and writes the output to a log file.</td><td><code>~/.evi/scheduled/*.json</code> (one file per task), logs in <code>~/.evi/logs/scheduled/</code></td></tr><tr><td><strong>Channels</strong></td><td>A way to push an external alert/notification into a <strong>live web session</strong> so the assistant sees it on its next turn.</td><td>In-memory on the running web session (not persisted)</td></tr></tbody></table>
+<p>Use <strong>recipes</strong> for repeatable multi-step flows you run by hand (a morning standup, a release-notes draft). Promote a recipe to a <strong>routine</strong> when you want a cron box, IFTTT, a GitHub Action, or a home-automation hub to trigger it over HTTP. Use <strong>scheduled tasks</strong> for single recurring prompts (a daily digest) or to watch for model drift with <strong>scheduled evals</strong>. Use <strong>channels</strong> to nudge an already-open chat with a fresh fact (a build finished, a sensor tripped).</p>
+<h2>How it works</h2>
+<h3>Recipes</h3>
+<p>A recipe is a TOML file with a <code>name</code>, an optional <code>description</code>, and one or more <code>[[steps]]</code>. Each step has a required <code>prompt</code> and an optional <code>label</code>. When you run a recipe, eVi builds a single agent and sends each step's prompt <strong>in order through the same conversation</strong>, so step 3 can refer to what steps 1 and 2 produced.</p>
+<p>Recipes are loaded/validated by <code>evi/recipes.py</code>:</p>
+<ul><li>A recipe with no <code>[[steps]]</code> (or a step missing a non-empty <code>prompt</code>) raises a <code>RecipeError</code>.</li><li>The recipe name is slugified for the filename, which also blocks path traversal — <code>_slug()</code> reduces any name to its bare filename with <code>.toml</code> stripped.</li><li><code>list</code> silently <strong>skips</strong> malformed <code>.toml</code> files rather than aborting the whole listing.</li></ul>
+<h3>Routines</h3>
+<p>A routine (<code>evi/routines.py</code>) stores a <code>name</code>, the <code>recipe</code> it runs, an unguessable <code>token</code> (generated with <code>secrets.token_urlsafe(18)</code>), an <code>enabled</code> flag, and a <code>yes</code> flag. The token <strong>is</strong> the capability — anyone with it can trigger the routine.</p>
+<p>The webhook endpoint <code>POST /api/routine/&lt;token&gt;</code> (in the web server):</p>
+<ul><li>Bypasses the normal web auth token (external callers don't have it) and instead validates the path token with a constant-time compare (<code>secrets.compare_digest</code>).</li><li>Returns <code>404</code> if the token matches nothing <strong>or</strong> the routine is disabled.</li><li>Runs the recipe <strong>headless</strong> (no streaming UI) and returns JSON: <code>{"ok": true, "routine": &lt;name&gt;, "results": [{label, prompt, text, error}, …]}</code>.</li><li>Permission policy: by default a routine runs <strong>restricted</strong> — only your auto-approved tool categories are allowed; everything else is <strong>denied, never prompted</strong> (<code>permission_callback</code> returns <code>False</code>). Set <code>yes</code> to auto-approve <strong>all</strong> tools for that routine (<code>agent.enable_auto_all()</code>).</li></ul>
+<h3>Scheduled tasks</h3>
+<p>A scheduled task (<code>evi/scheduled.py</code>) is one JSON file per task under <code>~/.evi/scheduled/</code>, stored separately so concurrent writers don't trample each other; writes are atomic (temp file + rename). Each task has an <code>id</code> (random hex), <code>name</code>, <code>cron</code> (<code>"min hour dom month dow"</code>), <code>prompt</code>, <code>kind</code> (<code>"prompt"</code> or <code>"eval"</code>), <code>enabled</code>, and run bookkeeping (<code>last_run</code>, <code>last_status</code>).</p>
+<p>The scheduler (<code>evi/scheduler.py</code>) wraps APScheduler's <code>BackgroundScheduler</code>:</p>
+<ul><li>On <code>start()</code> it schedules every <strong>enabled</strong> task. Tasks with an invalid cron string are <strong>logged and skipped</strong> (not fatal).</li><li>When a job fires, eVi builds a <strong>fresh one-shot <code>Agent</code></strong> (no history carries between runs), sends the prompt with a system note that says it's running unattended, captures the assistant text (plus a tool trace), and writes it to <code>~/.evi/logs/scheduled/&lt;id&gt;_&lt;timestamp&gt;.log</code>. The run status is recorded on the task (<code>"ok"</code> or <code>"error: …"</code>).</li><li>For <code>kind="eval"</code>, the <code>prompt</code> field holds the <strong>suite name</strong>; the run executes the suite and records status as <code>ok (P/T)</code> or <code>fail (P/T)</code> so drift shows up in <code>evi schedule list</code>.</li><li><code>misfire_grace_time</code> is 300s, so a job that's slightly late still fires.</li><li>The scheduler runs from <strong>either</strong> the standalone <code>evi scheduler</code> daemon <strong>or</strong> automatically inside <code>evi web</code> (started in the app's lifespan). If APScheduler isn't installed, the web app logs that the scheduler didn't start and keeps serving — it does <strong>not</strong> crash.</li></ul>
+<h3>Channels</h3>
+<p>Channels are the lightest mechanism. <code>POST /api/session/&lt;id&gt;/channel</code> with a JSON body <code>{"text": "...", "source": "..."}</code> appends a system note (<code>[channel:&lt;source&gt;] &lt;text&gt;</code>) to that live session's history so the assistant sees it on its next turn, and records it in the session's channel log. The matching <code>GET</code> returns recent channel messages (for a UI badge). The sender authenticates with the <strong>normal web token</strong> (unlike routines). Channel context is <strong>live-session only</strong> — it is <strong>not</strong> persisted across reloads.</p>
+<h2>Setup</h2>
+<h3>eVi home and config file</h3>
+<p>Everything lives under <code>~/.evi/</code> (override the whole location with the <code>EVI_HOME</code> environment variable). The primary config is <code>~/.evi/config.toml</code>. Tool toggles in <code>[tools]</code> (e.g. <code>memory</code>, <code>skills</code>, <code>mcp</code>) affect what scheduled tasks and routines can do, since each builds an agent from your current config.</p>
+<p>Paths created/used by these features:</p>
+<table><thead><tr><th>Path</th><th>Used by</th></tr></thead><tbody><tr><td><code>~/.evi/recipes/*.toml</code></td><td>Recipes</td></tr><tr><td><code>~/.evi/routines.json</code></td><td>Routines</td></tr><tr><td><code>~/.evi/scheduled/*.json</code></td><td>Scheduled tasks (one file each)</td></tr><tr><td><code>~/.evi/logs/scheduled/</code></td><td>Scheduled-task output logs</td></tr></tbody></table>
+<h3>Optional pip extra (scheduler only)</h3>
+<p>The scheduler dependency is <strong>optional</strong> and imported lazily. Recipes, routines, and channels need no extra. To run scheduled tasks, install the <code>scheduler</code> extra (pulls in <code>apscheduler&gt;=3.10</code>):</p>
+<pre><code class="language-bash">pip install 'evi-assistant[scheduler]'</code></pre>
+<p>If you try <code>evi scheduler</code> (or rely on <code>evi web</code>'s built-in scheduler) without it, you get a clear message: <code>scheduler requires apscheduler — install with: pip install 'evi-assistant[scheduler]'</code>.</p>
+<h3>Defaults</h3>
+<ul><li>New routines: <code>enabled = true</code>, <code>yes = false</code> (restricted permissions).</li><li>New scheduled tasks: <code>enabled = true</code>, <code>kind = "prompt"</code> (unless you pass <code>--eval</code> or <code>--disabled</code>).</li><li>Channel <code>source</code> defaults to <code>"channel"</code> and is truncated to 64 chars.</li></ul>
+<h2>Usage</h2>
+<h3>Recipes — <code>evi recipe</code></h3>
+<pre><code class="language-text">evi recipe new &lt;name&gt; [--overwrite]   # write a starter ~/.evi/recipes/&lt;name&gt;.toml
+evi recipe list                       # list saved recipes (name, step count, description)
+evi recipe show &lt;name&gt;                # print a recipe's numbered steps
+evi recipe run &lt;name&gt; [--yes | -y]    # run the steps in one shared conversation</code></pre>
+<p><code>evi recipe run</code> streams each turn (text + tool activity) to the console. <code>--yes</code>/<code>-y</code> auto-approves every tool call for an unattended run.</p>
+<h4>Web / Desktop — the Routes &amp; Recipes panel</h4>
+<p>The web and desktop apps expose recipes and multi-model routes together under <strong>Settings → Routes &amp; Recipes</strong>:</p>
+<ul><li><strong>Recipes</strong> — each saved recipe is listed with its steps; a <strong>Run</strong> button runs the recipe headless server-side (<code>POST /api/recipes/run</code>, one shared agent across steps, auto-approved) and shows each step's output inline.</li><li><strong>Routes</strong> — add / list / remove the multi-model routing rules in <code>~/.evi/routes.json</code> (<code>GET</code>/<code>POST /api/routes</code>, <code>POST /api/routes/remove</code>), the same store the CLI's <code>evi route</code> commands manage. Each rule maps a set of keywords to a model; the default and classifier models are set under Settings → Model &amp; Backend.</li></ul>
+<p>Authoring still happens in TOML for recipes (<code>evi recipe new</code>), but everyday browsing and running no longer needs the CLI.</p>
+<p><strong>Route indicator.</strong> When routing is on (<code>[llm] router_enabled = true</code>), each turn emits a <code>RouteInfo</code> event and the <strong>model chip</strong> (footer) shows the model that actually handled it — e.g. <code>qwen2.5-coder:14b-instruct-q4_K_M (code)</code> for a turn that matched the <code>code</code> route, or just the default model for an unmatched turn. The session <strong>mode</strong> (Chat / Cowork / Code) is shown separately by the mode switch. A common "best of both" setup: keep a chat model as the default and add a <code>code</code> route to a coder model —</p>
+<pre><code class="language-bash">evi models use qwen2.5:14b-instruct-q4_K_M           # chat default
+evi route add code --model qwen2.5-coder:14b-instruct-q4_K_M \
+  --keywords "code,debug,refactor,traceback,pytest,regex,function"
+evi route enable                                     # router_enabled = true</code></pre>
+<h3>Routines — <code>evi routine</code></h3>
+<pre><code class="language-text">evi routine add &lt;name&gt; --recipe &lt;recipe&gt; [--yes] [--overwrite]   # -r is short for --recipe
+evi routine list                                                 # names, target recipes, tokens
+evi routine remove &lt;name&gt;
+evi routine run &lt;name&gt;                                           # run locally, exactly as the webhook would</code></pre>
+<p><code>add</code> validates that the recipe exists first, then prints the curl command to trigger it. <code>--yes</code> here makes the routine auto-approve <strong>all</strong> tools when triggered. The webhook itself is <code>POST /api/routine/&lt;token&gt;</code> against your running <code>evi web</code> server.</p>
+<h3>Scheduled tasks — <code>evi schedule</code> and <code>evi scheduler</code></h3>
+<pre><code class="language-text">evi schedule add --name &lt;name&gt; --cron "&lt;crontab&gt;" (--prompt "&lt;text&gt;" | --eval &lt;suite&gt;) [--disabled]
+evi schedule list                  # id, name, cron, last status, on/off
+evi schedule remove &lt;task_id&gt;
+evi schedule enable &lt;task_id&gt;
+evi schedule disable &lt;task_id&gt;     # kept on disk, just won't fire
+evi schedule run-now &lt;task_id&gt;     # run immediately, ignoring cron; prints the log path
+
+evi scheduler [--reload-interval &lt;seconds&gt;]   # run the scheduler in the foreground (Ctrl-C to stop)</code></pre>
+<p>You must pass <strong>either</strong> <code>--prompt</code> or <code>--eval</code> (not neither). <code>evi scheduler</code> re-syncs jobs with disk every <code>--reload-interval</code> seconds (default 60), so <code>evi schedule add/remove/...</code> changes are picked up without a restart. If you run <code>evi web</code>, the scheduler starts automatically — you don't need a separate <code>evi scheduler</code> process.</p>
+<h3>Channels — HTTP only</h3>
+<pre><code class="language-text">POST /api/session/&lt;session_id&gt;/channel   body: {"text": "...", "source": "..."}
+GET  /api/session/&lt;session_id&gt;/channel   -&gt; {"messages": [...]}</code></pre>
+<p>Authenticate with your normal web token. <code>text</code> is required; <code>source</code> is optional.</p>
+<h2>Examples</h2>
+<h3>Example 1 — a "morning standup" recipe, run by hand</h3>
+<p>Create the file and edit the steps:</p>
+<pre><code class="language-bash">evi recipe new morning-standup</code></pre>
+<p><code>~/.evi/recipes/morning-standup.toml</code>:</p>
+<pre><code class="language-toml">name = "morning-standup"
+description = "Calendar + commits, then a summary"
+
+[[steps]]
+label = "Calendar"
+prompt = "What's on my calendar today?"
+
+[[steps]]
+label = "Commits"
+prompt = "List my git commits from yesterday in this repo."
+
+[[steps]]
+prompt = "Write a 3-bullet standup from the two answers above."</code></pre>
+<p>Run it (the third step builds on the first two, since they share one conversation):</p>
+<pre><code class="language-bash">evi recipe run morning-standup --yes</code></pre>
+<h3>Example 2 — promote that recipe to a webhook routine</h3>
+<pre><code class="language-bash"># Bind a routine to the recipe (restricted permissions by default):
+evi routine add standup --recipe morning-standup
+
+# eVi prints the trigger command, e.g.:
+#   curl -X POST http://localhost:8000/api/routine/JX8s...redacted...
+
+# Make sure the web server is running:
+evi web
+
+# Trigger it from anywhere (cron box, CI, IFTTT):
+curl -X POST http://localhost:8000/api/routine/JX8s...redacted...</code></pre>
+<p>The response is JSON with one entry per step:</p>
+<pre><code class="language-json">{
+  "ok": true,
+  "routine": "standup",
+  "results": [
+    {"label": "Calendar", "prompt": "What's on my calendar today?", "text": "…", "error": null},
+    {"label": "Commits",  "prompt": "List my git commits…",        "text": "…", "error": null},
+    {"label": "",         "prompt": "Write a 3-bullet standup…",   "text": "…", "error": null}
+  ]
+}</code></pre>
+<p>If a tool the recipe needs isn't in your auto-approved categories, it's denied (not prompted). Add <code>--yes</code> when creating the routine (<code>evi routine add standup --recipe morning-standup --yes</code>) only if you trust it to auto-approve <strong>all</strong> tools.</p>
+<h3>Example 3 — a daily scheduled digest</h3>
+<pre><code class="language-bash"># Requires: pip install 'evi-assistant[scheduler]'
+evi schedule add \
+  --name "daily-digest" \
+  --cron "0 9 * * *" \
+  --prompt "Summarize today's top tech news in 5 bullets."
+
+evi schedule list
+# on  3f9a1c2d daily-digest  cron=0 9 * * * last=(never run)
+
+# Test it right now without waiting for 9am:
+evi schedule run-now 3f9a1c2d
+# ran 3f9a1c2d → /home/you/.evi/logs/scheduled/3f9a1c2d_20260609_090000.log
+
+# Let it fire on schedule (or just run `evi web`, which starts the scheduler too):
+evi scheduler</code></pre>
+<h3>Example 4 — a scheduled eval (drift watch)</h3>
+<pre><code class="language-bash">evi schedule add \
+  --name "nightly-eval" \
+  --cron "0 2 * * *" \
+  --eval my-suite</code></pre>
+<p>The task's <code>kind</code> is <code>eval</code> and its <code>prompt</code> field holds the suite name. After it runs, <code>evi schedule list</code> shows a pass ratio in the status, e.g. <code>last=ok (12/12)</code> or <code>last=fail (10/12)</code>.</p>
+<h3>Example 5 — push a channel alert into a live web session</h3>
+<pre><code class="language-bash">curl -X POST http://localhost:8000/api/session/&lt;session_id&gt;/channel \
+  -H "Authorization: Bearer $EVI_WEB_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"text": "CI build #482 finished: PASSED", "source": "ci"}'</code></pre>
+<p>Response: <code>{"ok": true, "source": "ci", "pending": 1}</code>. The assistant sees <code>[channel:ci] CI build #482 finished: PASSED</code> as a system note on its next turn.</p>
+<h2>Notes / limits</h2>
+<ul><li><strong>Recipes share one conversation; scheduled tasks do not.</strong> Recipe steps run in a single shared agent so they can reference each other. Each scheduled-task firing builds a fresh agent with <strong>no</strong> memory of prior runs.</li><li><strong>Routine tokens are the only auth on the webhook.</strong> Anyone with the token can trigger the routine — treat <code>~/.evi/routines.json</code> and the printed curl commands as secrets. The endpoint deliberately bypasses the web auth token so external callers can reach it; it uses a constant-time token compare.</li><li><strong>Routines fail closed on permissions.</strong> Unless a routine is marked <code>yes</code>, any tool that isn't in your auto-approved categories is <strong>denied, never prompted</strong> (no human is there to approve). Use <code>yes</code> only for routines you fully trust.</li><li><strong>Scheduler is fail-open.</strong> Missing APScheduler doesn't crash <code>evi web</code> — the scheduler simply doesn't start and the rest of the app keeps serving. Tasks with a bad cron string are logged and skipped, not fatal.</li><li><strong>Disable vs remove.</strong> <code>evi schedule disable</code> keeps the task file on disk; it just won't fire. <code>evi routine</code>'s <code>enabled = false</code> similarly makes the webhook return <code>404</code>.</li><li><strong>Channels are ephemeral.</strong> Channel pushes are live-session-only context and are <strong>not</strong> persisted across reloads; if the session is gone, <code>GET …/channel</code> returns an empty list.</li><li><strong>Path-traversal safety.</strong> Recipe names are slugified to a bare filename, and scheduled-task ids reject <code>/</code>, <code>\</code>, and <code>..</code>, so neither can write outside their directory.</li><li><strong>Run scope of headless routines.</strong> Routine runs (and <code>evi routine run</code>) use <code>run_recipe_headless</code>, returning per-step <code>{label, prompt, text, error}</code> — a failing step records its <code>error</code> but the remaining steps still run.</li></ul>
+<p>Source files: <code>C:\evi\evi\recipes.py</code>, <code>C:\evi\evi\routines.py</code>, <code>C:\evi\evi\scheduled.py</code>, <code>C:\evi\evi\scheduler.py</code>, with CLI commands in <code>C:\evi\evi\apps\cli\main.py</code> and HTTP endpoints in <code>C:\evi\evi\apps\web\server.py</code>.</p>
+    </article>
+    <a class="doc-source" href="https://github.com/evi-assistant/evi-ai/blob/main/docs/features/automation.md">Edit on GitHub ↗</a>
+  </main>
+  <footer class="doc-foot">
+    <a href="index.html">← All documentation</a>
+    <span>eVi — local-first personal AI assistant</span>
+  </footer>
+</body>
+</html>

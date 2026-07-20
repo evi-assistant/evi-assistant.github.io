@@ -1,0 +1,90 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Ultracode — eVi docs</title>
+  <meta name="description" content="instead of a single pass: it decomposes the task, fans out several solver agents that attack it from different angles, has an adversarial critic try to break each candidate, then s… — eVi documentation." />
+  <link rel="stylesheet" href="../styles.css" />
+  <link rel="stylesheet" href="docs.css" />
+  <link rel="icon" href="../favicon.svg" type="image/svg+xml" />
+</head>
+<body>
+  <header class="nav">
+    <a class="brand" href="../index.html" aria-label="eVi home">
+      <span class="brand-mark">e<span class="brand-accent">Vi</span></span>
+    </a>
+    <nav class="nav-links">
+      <a href="index.html">Docs</a>
+      <a href="../index.html#install">Install</a>
+      <a href="../index.html#download">Download</a>
+      <a class="nav-gh" href="https://github.com/evi-assistant/evi-ai">GitHub ↗</a>
+    </nav>
+  </header>
+  <main class="doc-main">
+    <article class="doc">
+<h1>Ultracode</h1>
+<p><strong>Ultracode</strong> runs one hard task through an exhaustive multi-agent pipeline instead of a single pass: it decomposes the task, fans out several solver agents that attack it from different angles, has an adversarial critic try to break each candidate, then synthesizes the survivors into one answer. It's eVi's analogue of Claude Code's <code>ultracode</code> — more thorough and more trustworthy, at the cost of more model calls.</p>
+<h2>Overview</h2>
+<table><thead><tr><th></th><th></th></tr></thead><tbody><tr><td><strong>What</strong></td><td>A fixed pipeline: <code>decompose → fan-out N solvers (diverse angles) → adversarial verify → synthesize</code>.</td></tr><tr><td><strong>Why</strong></td><td>A single model pass misses edge cases and commits to the first approach. Multiple angles + an adversarial critic + a synthesis step catch more and produce a stronger answer.</td></tr><tr><td><strong>When</strong></td><td>One genuinely hard task — a tricky refactor, a design with real trade-offs, a bug you want cross-checked. Overkill for quick questions.</td></tr><tr><td><strong>Surfaces</strong></td><td><code>evi ultracode "&lt;task&gt;"</code>, the <code>/ultra</code> REPL command, <code>/effort ultracode</code>, and <strong>Settings → Ultracode</strong> in the web/desktop app.</td></tr></tbody></table>
+<h3>Why a fixed pipeline (not a model-authored script)</h3>
+<p>Claude Code's ultracode can lean on a strong model to <em>write</em> a bespoke orchestration script per task. eVi targets <strong>local models</strong> (qwen2.5-coder:14b and down) that can't reliably do that — so eVi's orchestration is <strong>fixed Python</strong> (<code>evi/ultracode.py</code>). The model is only ever asked to answer one concrete, role-scoped sub-prompt per stage (decompose / solve-one-angle / critique-one / synthesize) — the floor even a small model can clear. Each stage is a fresh headless agent, so per-stage context stays small no matter how long the pipeline.</p>
+<h2>How it works</h2>
+<ol><li><strong>Decompose</strong> — one agent maps the task into sub-goals + key risks (context for the solvers; no tools).</li><li><strong>Solve (fan-out)</strong> — <code>breadth</code> solver agents run in parallel, each told to take a different <strong>angle</strong> (direct, first-principles, edge-cases, simplicity, performance, alt). Solvers get the <code>mode</code> toolset (default <code>code</code>).</li><li><strong>Verify (adversarial)</strong> — a critic reviews each candidate for its single strongest flaw (or says <code>APPROVE</code>). Runs with <strong>no tools</strong> — a critic can't write files. With <code>rounds &gt; 1</code>, each critique is fed back to its solver for a refine pass, then re-critiqued.</li><li><strong>Synthesize (fan-in)</strong> — one agent merges the strengths and fixes the critiqued flaws into the final answer (keeping the best candidate verbatim if it can't improve it; ignoring any <code>ERROR:</code> candidate).</li></ol>
+<p>The fan-out reuses <code>workflows.fan_out</code> (the same concurrency primitive behind <code>evi workflow</code>'s parallel blocks). The core is <strong>model-free</strong> — <code>run_ultracode</code> takes an injected <code>run_one</code> callable, exactly like <code>evals.make_runners</code> — so the CLI, REPL, and web each supply their own agent factory and the pipeline is fully unit-testable.</p>
+<blockquote><p><strong>Local-model note:</strong> with a single local backend, inference serialises, so breadth buys a <strong>quality</strong> win (diverse angles + adversarial cross-check) more than wall-clock speed. Real parallel speedup needs a multi-GPU box or a <a href="features-agents.html#federation" target="_blank" rel="noopener">federation peer</a>.</p></blockquote>
+<h2>Setup</h2>
+<p>Defaults live under <code>[ultracode]</code> in <code>~/.evi/config.toml</code>:</p>
+<pre><code class="language-toml">[ultracode]
+breadth = 3          # parallel solver angles (1 disables fan-out)
+rounds = 1           # verify-&gt;refine cycles (0 skips critique — weakest-model escape hatch)
+mode = "code"        # tool preset for solvers: chat | cowork | code
+angles = []          # optional explicit angle names (empty = first `breadth`)
+max_workers = 4      # cap on concurrent stage agents
+auto_tune = true     # downshift breadth/rounds for tiny / short-context models
+cheap_fanout = false # run the solver fan-out on [llm] fast_model (keep critic/synth on the main model)</code></pre>
+<p><code>auto_tune</code> downshifts to <code>breadth=2, rounds=0</code> for tiny models (size tokens <code>0.5b/1b/1.5b/3b</code> or <code>mini</code>/<code>small</code> in the name) or short context (&lt; 16k) so ultracode stays usable on weak backends.</p>
+<h3>Running ultracode on a smaller model</h3>
+<p><code>evi models recommend</code> now also suggests a <strong>Fast</strong> model (the largest small/ fast companion that fits — e.g. <code>qwen2.5:3b</code> on a 16 GB GPU). Set it as the downshift/fast model:</p>
+<pre><code class="language-bash">evi models use qwen2.5:3b-instruct-q4_K_M --fast   # sets [llm] fast_model</code></pre>
+<p><code>fast_model</code> is used by <code>/fast</code> <strong>and</strong> composes with ultracode: turn on fast mode (<code>/fast on</code>) and the whole pipeline runs on the small model — handy to keep the big model free, or to run ultracode fast on modest hardware. The bundled small options span <code>qwen2.5:3b</code>, <code>llama3.2:3b</code>, <code>phi3.5:3.8b-mini</code>, <code>qwen2.5:1.5b</code>, <code>llama3.2:1b</code>, and <code>qwen2.5:0.5b</code>.</p>
+<h3>Cheaper fan-out (per-stage model routing)</h3>
+<p>The N parallel <strong>solvers</strong> are the expensive part of a run; the single adversarial <strong>critic</strong> and <strong>synthesizer</strong> are where quality is won. So you can route just the fan-out to a cheaper model and keep the critic/synth sharp:</p>
+<pre><code class="language-bash">evi ultracode "&lt;task&gt;" --cheap-fanout                 # solvers -&gt; [llm] fast_model
+evi ultracode "&lt;task&gt;" --solver-model qwen2.5:3b      # solvers -&gt; an explicit model
+evi ultracode "&lt;task&gt;" --solver-model qwen2.5:3b --synth-model qwen2.5-coder:14b</code></pre>
+<p>Or make it the default in config:</p>
+<pre><code class="language-toml">[ultracode]
+cheap_fanout = true   # needs [llm] fast_model set; no-op otherwise</code></pre>
+<p>Under the hood each stage is <code>decompose | solve | verify | synthesize</code>, and <code>UltraConfig.stage_models</code> maps a stage to a model id (empty = the main model) — the same per-stage routing the web <code>POST /api/dispatch/ultracode</code> honours via <code>{cheap_fanout: true}</code> or <code>{solver_model: "&lt;id&gt;"}</code>. With a single local backend this is a <strong>cost/VRAM</strong> lever (smaller model for the bulk of the calls) more than a speedup, since inference still serialises.</p>
+<h2>Usage</h2>
+<h3>CLI</h3>
+<pre><code class="language-bash">evi ultracode "refactor the auth module to remove duplicated token parsing, add tests"
+evi ultracode "&lt;task&gt;" --breadth 4 --rounds 2 --mode code   # override config
+evi ultracode "&lt;task&gt;" --json                               # full result incl. every stage</code></pre>
+<p>It prints each stage as it runs (<code>&gt; solve direct</code>, <code>&gt; verify edge_cases</code>, …) then the final answer.</p>
+<h3>REPL</h3>
+<pre><code class="language-text">/ultra &lt;task&gt;     run THIS turn through the pipeline
+/ultra            toggle session-wide auto-ultracode on/off
+/effort ultracode max reasoning + auto-pipeline every substantive turn (Claude-parity);
+                  /effort high|medium|low|max clears it</code></pre>
+<p>With auto-ultracode on, substantive turns (non-trivial, non-greeting) run through the pipeline automatically; short/greeting turns fall through to a normal turn. The prompt shows an <code>[ultracode]</code> chip while it's active.</p>
+<h3>Web / Desktop</h3>
+<p><strong>Settings → Ultracode</strong>: a task box with breadth/rounds/mode controls and a <strong>Run</strong> button. It shows each stage (collapsible) and the final answer. Backed by <code>POST /api/dispatch/ultracode</code> (<code>{task, breadth?, rounds?, mode?}</code> → <code>{ok, answer, stages, config}</code>). Like the eval/recipe runners it blocks until the whole pipeline finishes.</p>
+<h2>Examples</h2>
+<pre><code class="language-bash"># A weakest-model run: one solver, no critique (~3 calls, barely more than `evi run`)
+evi ultracode "summarise what changed in this file" --breadth 1 --rounds 0
+
+# A thorough run: 4 angles, a refine round
+evi ultracode "design a retry policy for the HTTP client" --breadth 4 --rounds 2</code></pre>
+<h2>Notes / limits</h2>
+<ul><li><strong>Cost</strong>: a default run is ~8 model calls (1 decompose + 3 solve + 3 verify + 1 synthesize); <code>rounds=2</code> adds a refine + re-critique pass. Use `--breadth 1 --rounds 0` to gauge cost cheaply first.</li><li><strong>Synthesis regression</strong>: a weak synthesizer can occasionally produce a worse answer than the best solver; the synthesis prompt mitigates this ("return the best candidate verbatim if you can't improve it"). Inspect stages with <code>--json</code> or the web panel if a result looks off.</li><li><strong>Conversation coherence</strong>: the <code>/ultra</code> and auto-ultracode paths store only the final answer in history (not the plan/angles/critiques), so <code>/context</code> under-reports the turn's real token cost.</li><li>Stages that error return <code>ERROR: …</code> and are passed to synthesis (told to ignore them) — a failed stage never crashes the run.</li></ul>
+    </article>
+    <a class="doc-source" href="https://github.com/evi-assistant/evi-ai/blob/main/docs/features/ultracode.md">Edit on GitHub ↗</a>
+  </main>
+  <footer class="doc-foot">
+    <a href="index.html">← All documentation</a>
+    <span>eVi — local-first personal AI assistant</span>
+  </footer>
+</body>
+</html>

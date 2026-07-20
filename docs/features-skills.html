@@ -1,0 +1,133 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Skills — eVi docs</title>
+  <meta name="description" content="Skills are named markdown instruction packets the model loads on demand. You write the &quot;how&quot; of a task once (a review rubric, a house style, a checklist), and the agent pulls it in… — eVi documentation." />
+  <link rel="stylesheet" href="../styles.css" />
+  <link rel="stylesheet" href="docs.css" />
+  <link rel="icon" href="../favicon.svg" type="image/svg+xml" />
+</head>
+<body>
+  <header class="nav">
+    <a class="brand" href="../index.html" aria-label="eVi home">
+      <span class="brand-mark">e<span class="brand-accent">Vi</span></span>
+    </a>
+    <nav class="nav-links">
+      <a href="index.html">Docs</a>
+      <a href="../index.html#install">Install</a>
+      <a href="../index.html#download">Download</a>
+      <a class="nav-gh" href="https://github.com/evi-assistant/evi-ai">GitHub ↗</a>
+    </nav>
+  </header>
+  <main class="doc-main">
+    <article class="doc">
+<h1>Skills</h1>
+<p>Skills are <strong>named markdown instruction packets the model loads on demand</strong>. You write the "how" of a task once (a review rubric, a house style, a checklist), and the agent pulls it into context only when it decides the task calls for it — so the playbook is reusable and the context window stays cheap.</p>
+<h2>Overview</h2>
+<table><thead><tr><th></th><th></th></tr></thead><tbody><tr><td><strong>What</strong></td><td>A folder <code>~/.evi/skills/&lt;name&gt;/</code> containing a <code>SKILL.md</code> file with optional frontmatter + a markdown body of instructions.</td></tr><tr><td><strong>How the model uses it</strong></td><td>Every skill's <em>one-line index</em> (name + description) is injected into the system prompt. The model calls the <code>invoke_skill(name)</code> tool to pull the full body when it judges the skill relevant.</td></tr><tr><td><strong>Where</strong></td><td><code>~/.evi/skills/</code> (yours) and <code>~/.evi/plugins/&lt;plugin&gt;/skills/</code> (plugin-supplied, exposed as <code>&lt;plugin&gt;:&lt;skill&gt;</code>).</td></tr><tr><td><strong>Toggle</strong></td><td><code>[tools] skills = true</code> (the default).</td></tr></tbody></table>
+<p>Skills vs the neighbours:</p>
+<ul><li><strong>Skill</strong> — <em>behavioural</em> instructions the model loads itself when relevant. No arguments, not triggered by you typing anything.</li><li><strong>Slash command</strong> (<a href="features-slash-commands.html" target="_blank" rel="noopener">slash-commands.md</a>) — a prompt template <em>you</em> fire by typing <code>/name</code>, with <code>$ARGUMENTS</code>. Deterministic, user-initiated.</li><li><strong>Recipe</strong> (<a href="features-automation.html" target="_blank" rel="noopener">automation.md</a>) — a fixed <em>sequence</em> of prompts run start-to-finish through one conversation.</li></ul>
+<p>Reach for a skill when you want the model to <em>consistently</em> apply a method ("review code like this", "summarise papers like this") without restating it every time, and without forcing it on turns where it doesn't apply.</p>
+<h2>How it works</h2>
+<p><code>evi/skills.py</code> defines a read-only <code>SkillStore</code>:</p>
+<ul><li><strong>Discovery</strong> — on every call it rescans <code>~/.evi/skills/</code> plus each installed plugin's <code>skills/</code> directory, so a freshly added skill shows up without restarting the long-lived web/desktop process. Each skill is a <em>directory</em> containing <code>SKILL.md</code> (the directory layout leaves room for skill-local assets — helper scripts, sample data — without colliding with the instructions file).</li><li><strong>The index</strong> — <code>format_for_prompt()</code> renders an <code>## Available skills</code> block (one <code>- **name** — description</code> line each) and appends <code>Call invoke_skill(name) to load the full instructions.</code> This block is added to the agent's system prompt when <code>[tools] skills</code> is on and at least one skill exists.</li><li><strong>Loading</strong> — the model calls the <code>invoke_skill(name)</code> tool (<code>evi/tools/skills.py</code>), which returns the <code>SKILL.md</code> body with frontmatter stripped. A companion <code>list_skills</code> tool returns the index as JSON. Both are in the <code>skills</code> tool category.</li><li><strong>No auto-firing.</strong> eVi deliberately does <strong>not</strong> keyword-match skills into the prompt. The model sees the menu and chooses — which keeps token use predictable and the model's behaviour debuggable. (If you want metadata-triggered or argument-driven behaviour, use a slash command or recipe instead.)</li></ul>
+<h3><code>SKILL.md</code> format</h3>
+<pre><code class="language-markdown">---
+name: code-review
+description: Review a diff for correctness, style, and security issues.
+---
+
+# Body — the actual instructions the model follows once loaded
+Step 1 …
+Step 2 …</code></pre>
+<ul><li><strong>Frontmatter</strong> is an optional <code>---</code>-delimited block at the very top.<ul><li><code>name</code> — overrides the folder name as the skill's id. If omitted, the folder name is used. Must match <code>[A-Za-z0-9_-]+</code>.</li><li><code>description</code> — the one-liner shown in the index (so the model can decide whether to load it). Falls back to <code>(no description)</code>.</li></ul></li><li><strong>Body</strong> — everything after the frontmatter. This is what <code>invoke_skill</code> returns. Write it as direct instructions to the model: ordered steps, a priority list, and an explicit output format work best.</li></ul>
+<h2>Setup</h2>
+<h3>Files and paths</h3>
+<table><thead><tr><th>Path</th><th>What</th></tr></thead><tbody><tr><td><code>~/.evi/skills/&lt;name&gt;/SKILL.md</code></td><td>One skill. <code>&lt;name&gt;</code> is the folder; frontmatter <code>name</code> overrides the id.</td></tr><tr><td><code>~/.evi/skills/&lt;name&gt;/…</code></td><td>Optional skill-local assets (scripts, data) — eVi only reads <code>SKILL.md</code>.</td></tr><tr><td><code>~/.evi/plugins/&lt;plugin&gt;/skills/&lt;skill&gt;/SKILL.md</code></td><td>A plugin-supplied skill, surfaced as <code>&lt;plugin&gt;:&lt;skill&gt;</code>.</td></tr></tbody></table>
+<h3>Config</h3>
+<pre><code class="language-toml"># ~/.evi/config.toml
+[tools]
+skills = true      # default; set false to drop the skill index + invoke_skill tool</code></pre>
+<h3>Installing the bundled examples</h3>
+<p>The repo ships two ready-to-use skills under <code>examples/skills/</code>:</p>
+<pre><code class="language-bash"># one skill
+mkdir -p ~/.evi/skills/code-review
+cp examples/skills/code-review/SKILL.md ~/.evi/skills/code-review/
+
+# or all of them
+cp -r examples/skills/* ~/.evi/skills/</code></pre>
+<h2>Usage</h2>
+<p>Skills are model-driven — you don't <em>type</em> a skill (that's a <a href="features-slash-commands.html" target="_blank" rel="noopener">slash command</a>). There is a small CLI for managing them:</p>
+<pre><code class="language-bash">evi skill list                       # installed skills (yours + plugin skills)
+evi skill show &lt;name&gt;                # print a skill's description, body, bundled files
+evi skill import &lt;dir-or-SKILL.md&gt;   # copy a skill into ~/.evi/skills/
+evi skill import &lt;dir&gt; --name foo --rewrite-paths --force
+evi skill remove &lt;name&gt;              # delete a user skill (~/.evi/skills/&lt;name&gt;/)</code></pre>
+<p><code>remove</code> only touches your own skills; a plugin skill (<code>&lt;plugin&gt;:&lt;skill&gt;</code>) is owned by its plugin — remove it with <code>evi plugin remove &lt;plugin&gt;</code>.</p>
+<p>Once installed:</p>
+<ol><li>Start a chat (<code>evi chat</code>, or the web/desktop app).</li><li>The agent's system prompt now lists your skills.</li><li>When a turn matches a skill, the model calls <code>invoke_skill(&lt;name&gt;)</code> and then follows the loaded instructions. You'll see the <code>invoke_skill</code> tool call in the transcript / tool activity. If the skill bundles companion files, their absolute paths are appended to the loaded text so the model can read them with its file tools.</li></ol>
+<p>To nudge it explicitly, just ask: <em>"review this diff"</em> with a <code>code-review</code> skill installed, or <em>"use the summarize-paper skill on this PDF"</em>. To confirm what's available, ask the model to call <code>list_skills</code>, or look in <code>~/.evi/skills/</code>.</p>
+<p>Skills work identically in the CLI, web, and desktop frontends — they're a property of the agent, not the UI.</p>
+<h2>Examples</h2>
+<h3>Example 1 — a house code-review rubric</h3>
+<p><code>~/.evi/skills/code-review/SKILL.md</code> (the bundled example, abridged):</p>
+<pre><code class="language-markdown">---
+name: code-review
+description: Review a diff for correctness, style, and security issues.
+---
+
+# Code review skill
+When asked to review code, follow these steps in order:
+
+## 1. Understand the change
+- Read the diff in full before commenting.
+
+## 2. Correctness pass (highest priority)
+- Off-by-one errors, resource leaks, concurrency bugs, error handling,
+  security smells (string-built SQL/shell, secrets in code).
+
+## 3. Style pass (lower priority)
+- Follow the project's existing conventions, not your favourites.
+
+## Output format
+**Summary:** &lt;one sentence&gt;
+### Correctness
+- &lt;issue&gt; (`path/to/file.ext:42`)</code></pre>
+<p>Then: <code>evi chat</code> → <em>"review the staged diff"</em> → the model loads the skill and produces output in your fixed format, every time.</p>
+<h3>Example 2 — a minimal skill from scratch</h3>
+<pre><code class="language-bash">mkdir -p ~/.evi/skills/sql-explain
+cat &gt; ~/.evi/skills/sql-explain/SKILL.md &lt;&lt;'EOF'
+---
+name: sql-explain
+description: Explain a SQL query in plain English and flag slow patterns.
+---
+
+# SQL explainer
+1. Restate what the query returns in one sentence.
+2. Walk the joins in execution order.
+3. Flag full-table scans, N+1 patterns, and missing-index smells.
+4. End with a one-line "Bottom line:" verdict.
+EOF</code></pre>
+<p>(That's just an illustration — <code>examples/skills/sql-explain/</code> ships it too.)</p>
+<h3>Example 3 — a plugin-supplied skill</h3>
+<p>A plugin that ships <code>skills/threat-model/SKILL.md</code> exposes it as <code>plugin-name:threat-model</code> in the index once installed (<code>evi plugin add &lt;dir-or-git-url&gt;</code>). See <a href="features-plugins.html" target="_blank" rel="noopener">plugins.md</a>.</p>
+<h2>Loading Claude skills</h2>
+<p>eVi's <code>SKILL.md</code> shape is the same one <strong>Claude Agent Skills</strong> use, so a Claude skill folder is essentially drop-in:</p>
+<pre><code class="language-bash">evi skill import path/to/claude-skill          # copies it into ~/.evi/skills/
+evi skill import path/to/claude-skill --rewrite-paths   # also fix relative refs</code></pre>
+<p>What carries over and what doesn't:</p>
+<ul><li>✅ <strong><code>name</code> + <code>description</code> frontmatter</strong> → eVi's skill index. Extra Claude keys (<code>license</code>, <code>allowed-tools</code>, <code>metadata</code>, …) are read but <strong>ignored</strong> — they don't break anything.</li><li>✅ <strong>The instruction body</strong> is used verbatim as the <code>invoke_skill</code> payload.</li><li>✅ <strong>Bundled files</strong> (a <code>reference.md</code>, a <code>scripts/</code> dir, assets) are copied in, and when the model invokes the skill their <strong>absolute paths are appended</strong> to the loaded text — so the model can <code>read_file</code> / run them on its own (it needs the relevant tools enabled).</li><li>⚠️ <strong><code>allowed-tools</code> is not enforced.</strong> eVi gates tools through its own permissions/modes, not the skill's frontmatter.</li><li>⚠️ <strong>Frontmatter is single-line <code>key: value</code></strong> (not full YAML). A multi-line folded/literal <code>description:</code> would be truncated — keep it on one line.</li><li><code>--rewrite-paths</code> rewrites standalone relative references in <code>SKILL.md</code> (e.g. <code>reference.md</code>, <code>scripts/fill.py</code>) to their absolute installed paths, so the model finds them regardless of its working directory.</li></ul>
+<p>Self-contained Claude skills (all instructions in <code>SKILL.md</code>) work with a plain <code>evi skill import</code>; skills that lean on companion files work best with <code>--rewrite-paths</code> (and the auto-appended file list as a backstop).</p>
+<h2>Notes / limits</h2>
+<ul><li><strong><code>SKILL.md</code> is the entry point.</strong> Its body is what <code>invoke_skill</code> returns; other files in the folder aren't loaded into the prompt, but their paths are surfaced to the model (see above) so it can read them on demand.</li><li><strong>Names</strong> must match <code>[A-Za-z0-9_-]+</code>; skills that fail validation are skipped silently rather than erroring the whole list.</li><li><strong>Names</strong> must match <code>[A-Za-z0-9_-]+</code>; skills that fail validation are skipped silently rather than erroring the whole list.</li><li><strong>No arguments / no triggers.</strong> A skill is static instructions. For argument-substituted templates you fire by hand, use a <a href="features-slash-commands.html" target="_blank" rel="noopener">slash command</a>; for a fixed multi-step run, a <a href="features-automation.html" target="_blank" rel="noopener">recipe</a>.</li><li><strong>The model chooses.</strong> If a skill isn't being picked up, sharpen its <code>description</code> so the relevance is obvious from the one-line index, or ask for it by name.</li><li><strong>Context cost</strong> is just the one-line index per skill until <code>invoke_skill</code> is called — so a big library of skills stays cheap.</li></ul>
+    </article>
+    <a class="doc-source" href="https://github.com/evi-assistant/evi-ai/blob/main/docs/features/skills.md">Edit on GitHub ↗</a>
+  </main>
+  <footer class="doc-foot">
+    <a href="index.html">← All documentation</a>
+    <span>eVi — local-first personal AI assistant</span>
+  </footer>
+</body>
+</html>

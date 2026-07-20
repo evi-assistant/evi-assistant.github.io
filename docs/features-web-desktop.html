@@ -1,0 +1,142 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Web &amp; Desktop (settings, multi-user, deep links, updater) — eVi docs</title>
+  <meta name="description" content="eVi ships the same assistant in three skins: a Typer CLI, a web UI (FastAPI + Server-Sent Events), and a Tauri desktop app that wraps that web UI in a native window with a menu bar… — eVi documentation." />
+  <link rel="stylesheet" href="../styles.css" />
+  <link rel="stylesheet" href="docs.css" />
+  <link rel="icon" href="../favicon.svg" type="image/svg+xml" />
+</head>
+<body>
+  <header class="nav">
+    <a class="brand" href="../index.html" aria-label="eVi home">
+      <span class="brand-mark">e<span class="brand-accent">Vi</span></span>
+    </a>
+    <nav class="nav-links">
+      <a href="index.html">Docs</a>
+      <a href="../index.html#install">Install</a>
+      <a href="../index.html#download">Download</a>
+      <a class="nav-gh" href="https://github.com/evi-assistant/evi-ai">GitHub ↗</a>
+    </nav>
+  </header>
+  <main class="doc-main">
+    <article class="doc">
+<h1>Web &amp; Desktop (settings, multi-user, deep links, updater)</h1>
+<h2>Overview</h2>
+<p>eVi ships the same assistant in three skins: a Typer <strong>CLI</strong>, a <strong>web UI</strong> (FastAPI + Server-Sent Events), and a <strong>Tauri desktop app</strong> that wraps that web UI in a native window with a menu bar, system tray, and a signed auto-updater. This page covers the cross-cutting "shell" concerns of the web/desktop surface:</p>
+<ul><li><strong>Settings</strong> — editing your whole <code>config.toml</code> from a browser panel, with most changes hot-applied to live chats.</li><li><strong>Auth &amp; multi-user</strong> — an optional bearer token to gate <code>evi web</code>, plus opt-in per-user logins where each person gets an isolated workspace.</li><li><strong>Deep links</strong> — the <code>evi://</code> URL scheme that focuses the desktop app (or a browser tab) on a specific session or workflow.</li><li><strong>Updater</strong> — the desktop app's background self-update against signed GitHub releases.</li></ul>
+<p>You'd use the web UI when you want a richer chat surface than the terminal (tabs, settings screen, drag-drop uploads, dispatch dashboard) while keeping everything local. You'd use the desktop app for a one-click, always-warm assistant that survives window-close (it hides to the tray) and keeps itself up to date. Everything is local-first: the desktop app spawns the Python server on <code>127.0.0.1</code> and there is no cloud component.</p>
+<h2>How it works</h2>
+<h3>The web server</h3>
+<p><code>evi web</code> (or <code>python -m uvicorn evi.apps.web.server:app</code>) serves a single-page app from <code>evi/apps/web/static/index.html</code>. The browser POSTs to <code>/api/chat</code> with <code>{session_id, message}</code> and reads back an SSE stream of JSON event lines. Each <code>session_id</code> maps to one <code>WebSession</code> holding an <code>Agent</code>; sessions are revived from their on-disk transcript when first requested, so closing and reopening the app restores history.</p>
+<p>Slash commands (<code>/help</code>, <code>/reset</code>, <code>/tools</code>, <code>/model</code>, <code>/goal</code>, <code>/plan</code>, <code>/auto</code>, <code>/compact</code>, <code>/reload</code>, plus user commands from <code>~/.evi/commands/</code>) are dispatched <strong>server-side</strong> — the browser just types and reads; CLI and web behave identically.</p>
+<h3>The desktop app</h3>
+<p><code>desktop/src-tauri/src/main.rs</code> is the native shell. On launch it:</p>
+<ol><li>Picks a <strong>stable preferred port <code>8473</code></strong> (falling back to a random free port if taken). A stable origin means the webview's <code>localStorage</code> — your open tabs and session ids — survives a restart.</li><li><strong>Spawns the server.</strong> In a packaged build it runs the bundled PyInstaller sidecar <code>evi-server</code>; in a source checkout it spawns <code>py -3.13 -m uvicorn evi.apps.web.server:app</code> (or <code>python3 -m uvicorn …</code> off-Windows) from the repo root.</li><li>Loads a <strong>loading shim</strong> that polls the port and redirects once <code>/api/health</code> is up, so you never see a connection-refused page during the sidecar's cold start.</li><li>Builds the <strong>File / Edit / View / Help</strong> menu bar and a <strong>system tray</strong>. Closing the window calls <code>prevent_close()</code> and <em>hides</em> it — the assistant and its warm sidecar keep running. Quit from the tray ("Quit eVi") or <strong>File → Exit</strong>.</li><li>Starts a background <strong>update check</strong> (unless in remote mode or opted out).</li></ol>
+<p>Menu/tray actions other than devtools and quit are routed into the page via <code>window.eviUI.handleMenu('&lt;id&gt;')</code> (e.g. <code>new_chat</code>, <code>settings</code>, <code>check_updates</code>, <code>open_logs</code>).</p>
+<p><strong>Remote (thin-client) mode:</strong> set <code>EVI_REMOTE_URL</code> to point the desktop window at an already-running eVi elsewhere (e.g. a GPU box). The app skips the Python spawn, waits up to 15s for that URL's <code>/api/health</code>, and navigates to it. The updater is disabled in this mode (there's no local bundle to replace).</p>
+<h3>Settings (read/write config)</h3>
+<p>The settings panel reads <code>GET /api/config</code> and writes <code>POST /api/config</code> with a nested <code>{section: {key: value}}</code> patch. Key behaviours:</p>
+<ul><li><strong>Secrets are masked.</strong> <code>[llm] api_key</code>, <code>[web] auth_token</code>, and <code>[telemetry] dsn</code> come back as the sentinel <code>********</code>. POSTing the sentinel back means "leave unchanged" so re-saving the form never wipes a token you never saw. An empty string still clears the value.</li><li><strong>Unknown sections/keys are ignored</strong> (forward-compatible with newer configs).</li><li><strong>Hot-apply.</strong> Touched sections in <code>llm</code>, <code>auto</code>, <code>tools</code>, <code>telemetry</code>, <code>comfy</code>, <code>web</code>, <code>google</code>, <code>microsoft</code>, <code>obsidian</code> are pushed onto every live session so changes take effect on the next turn without a new chat. The LLM client is rebuilt when <code>[llm]</code> changes. <code>tools</code> and <code>auto</code> only fully bind at session creation, so the response flags them as <code>deferred</code> ("applies to new chats").</li></ul>
+<h3>Auth &amp; multi-user</h3>
+<p>A FastAPI middleware guards every <code>/api/*</code> route. Auth fires only when <code>[web] auth_token</code> is set <strong>or</strong> <code>[web] multi_user = true</code> with users present; otherwise access is open (fine for localhost-only). When active, a request must carry <code>Authorization: Bearer &lt;token&gt;</code> <strong>or</strong> <code>?token=&lt;token&gt;</code> (the query form covers <code>&lt;img&gt;</code> src and SSE streams that can't set headers). A few paths self-bootstrap and stay public: <code>/</code>, <code>/static/*</code>, <code>/images/*</code>, <code>/api/health</code>, <code>/api/auth/check</code>, <code>/api/backend/status</code>, and routine webhooks (<code>/api/routine/*</code>, which authenticate via their own unguessable path token).</p>
+<p>In <strong>multi-user</strong> mode, <code>~/.evi/users.json</code> holds <code>{name, token}</code> entries. Any user token authenticates and the request is scoped to that user; the owner's <code>auth_token</code> still works and resolves to the user <code>"owner"</code>. Each user gets an <strong>isolated workspace</strong> — sessions, transcripts (<code>~/.evi/users/&lt;name&gt;/transcripts</code>), and memory (<code>~/.evi/users/&lt;name&gt;/memory</code>) — that other users can't see. Skills, plugins, and config stay shared (capabilities, not personal data). Drop a user from the file to revoke access.</p>
+<h3>Deep links</h3>
+<p><code>evi/deeplinks.py</code> defines three routes:</p>
+<table><thead><tr><th>Link</th><th>Effect</th></tr></thead><tbody><tr><td><code>evi://session/&lt;id&gt;</code></td><td>open / resume that session</td></tr><tr><td><code>evi://new</code></td><td>start a new chat</td></tr><tr><td><code>evi://workflow/&lt;name&gt;</code></td><td>open the dispatch panel, ready to run a workflow</td></tr></tbody></table>
+<p>The desktop app registers the <code>evi://</code> scheme (via <code>tauri.conf.json</code>, plus a best-effort runtime <code>register_all()</code> for dev/portable runs). An incoming link is mapped to an in-app web path by <code>to_web_path()</code> / the Rust mirror <code>deep_link_to_path()</code>: <code>evi://session/&lt;id&gt;</code> → <code>/?session=&lt;id&gt;</code>, <code>evi://workflow/&lt;name&gt;</code> → <code>/?workflow=&lt;name&gt;</code>, everything else (including <code>evi://new</code>) → <code>/</code>. <strong>Unknown routes fall back to <code>/</code></strong> so a stray link never errors the shell. Because the web UI understands <code>/?session=</code> and <code>/?workflow=</code> natively, the same links also work pasted into a browser.</p>
+<h3>Updater</h3>
+<p><code>spawn_update_check()</code> queries eVi's signed GitHub releases (<code>latest.json</code> published by <code>desktop-release.yml</code>). If a newer version exists it downloads, installs, and restarts — on the async runtime, so it never blocks the window. The updater <strong>only accepts bundles signed with eVi's key</strong> (pubkey baked into <code>tauri.conf.json</code>), so a tampered release can't be installed. Before installing, the sidecar is killed first (Windows keeps onedir DLLs locked while <code>evi-server</code> runs). Progress surfaces as an in-app toast polled via the <code>update_status_cmd</code> Tauri command; <strong>Help → Check for Updates</strong> triggers it on demand via <code>check_for_update_cmd</code>.</p>
+<h2>Setup</h2>
+<p>All state lives under <code>~/.evi/</code> (Windows: <code>%USERPROFILE%\.evi\</code>). The relevant config sections in <code>~/.evi/config.toml</code>:</p>
+<pre><code class="language-toml">[web]
+auth_token = ""          # empty = open access. Set to require a bearer token.
+multi_user = false       # opt-in per-user logins from ~/.evi/users.json</code></pre>
+<p>Multi-user logins file, <code>~/.evi/users.json</code> (managed by the CLI — see below):</p>
+<pre><code class="language-json">[ { "name": "alice", "token": "…" }, { "name": "bob", "token": "…" } ]</code></pre>
+<p><strong>Optional pip extra:</strong> the web UI needs uvicorn/FastAPI, shipped in the <code>web</code> extra:</p>
+<pre><code class="language-bash">pip install 'evi-assistant[web]'</code></pre>
+<p><strong>Defaults:</strong> <code>evi web</code> binds <code>127.0.0.1:8000</code>. The desktop app prefers port <strong>8473</strong>. Auth is <strong>off</strong> by default. Multi-user is <strong>off</strong> by default. Auto-update is <strong>on</strong> in packaged desktop builds.</p>
+<p><strong>Environment variables (desktop):</strong></p>
+<table><thead><tr><th>Var</th><th>Purpose</th></tr></thead><tbody><tr><td><code>EVI_HOME</code></td><td>Override the <code>~/.evi/</code> location entirely</td></tr><tr><td><code>EVI_REMOTE_URL</code></td><td>Thin-client mode: skip the local spawn and navigate to this URL</td></tr><tr><td><code>EVI_PYTHON</code></td><td>Interpreter to spawn in a source checkout (default <code>py -3.13</code>)</td></tr><tr><td><code>EVI_REPO_ROOT</code></td><td>Pin the repo root instead of auto-detecting it</td></tr><tr><td><code>EVI_AUTO_UPDATE</code></td><td>Set to <code>0</code> / <code>false</code> to disable the background self-update</td></tr><tr><td><code>EVI_TESSERACT_CMD</code></td><td>Set automatically when a bundled <code>tesseract</code> ships next to the sidecar</td></tr></tbody></table>
+<h2>Usage</h2>
+<h3>CLI</h3>
+<pre><code class="language-text">evi web [--host 127.0.0.1] [--port 8000]   # launch the web UI
+evi web-config token show                   # print the current token (or "(unset)")
+evi web-config token rotate [--length 32]   # generate + persist a new token (prints once)
+evi web-config token clear                  # unset the token → open access again
+evi web-config users list                   # list multi-user logins
+evi web-config users add &lt;name&gt;             # add/re-issue a user (prints token once)
+evi web-config users remove &lt;name&gt;          # revoke a user
+evi link [&lt;id&gt;|new]                         # print an evi:// deep link (default: most recent session)
+evi link --open &lt;evi://…&gt;                   # resolve a link and show where it routes</code></pre>
+<p>Note the asymmetry: you <em>launch</em> the server with <code>evi web</code>, but its auth/helpers live under <code>evi web-config</code> (the token group is <code>evi web-config token …</code>, not <code>evi web token …</code>).</p>
+<h3>Web UI</h3>
+<ul><li><strong>Sign in:</strong> if auth is on, a login overlay asks for the token. It's stored in <code>localStorage</code> and attached to every same-origin request; a 401 clears it and re-prompts.</li><li><strong>Settings:</strong> click the ⚙ button or press <strong>Ctrl+,</strong>. Edit any config section; secret fields show <code>********</code> and are left untouched on save unless you type a new value.</li><li><strong>Open a session/workflow:</strong> visit <code>/?session=&lt;id&gt;</code> to open or resume a tab, or <code>/?workflow=&lt;name&gt;</code> to open the dispatch panel.</li><li><strong>Keyboard:</strong> Enter sends, Shift+Enter newline, Ctrl+N new chat, Ctrl+I switch model, Ctrl+F find, Esc closes a dialog.</li></ul>
+<h3>Desktop app</h3>
+<ul><li><strong>Menu bar:</strong> File (New Chat, Open File, Export Chat, Undo File Change, Settings, Exit), Edit, View (zoom, toggle theme, devtools), Help (Documentation, Keyboard Shortcuts, Check for Updates, Run Diagnostics, Open Logs Folder, Get Support, About).</li><li><strong>Tray:</strong> left-click shows the window; menu has Show, New Chat, Check for Updates, Quit.</li><li><strong>Check for Updates:</strong> Help → Check for Updates (or the tray item) checks immediately and, if an update exists, downloads + installs in the background and restarts.</li></ul>
+<h2>Examples</h2>
+<h3>Example 1 — turn on web auth and connect</h3>
+<pre><code class="language-bash"># 1. Generate and persist a bearer token (printed once).
+evi web-config token rotate
+# rotated
+# 3f2a9c…&lt;64 hex chars&gt;
+
+# 2. Launch the server — it confirms auth is enabled.
+evi web --host 127.0.0.1 --port 8000
+# web auth: enabled (browser prompts for the token on first load)
+# eVi web → http://127.0.0.1:8000</code></pre>
+<p>Open <code>http://127.0.0.1:8000</code>, paste the token into the sign-in form (it's cached in <code>localStorage</code>). Scripts/curl can authenticate either way:</p>
+<pre><code class="language-bash"># Header form (preferred):
+curl -H "Authorization: Bearer 3f2a9c…" http://127.0.0.1:8000/api/health
+
+# Query form (for streaming/img endpoints that can't set headers):
+curl "http://127.0.0.1:8000/api/health?token=3f2a9c…"</code></pre>
+<p>To go back to open access: <code>evi web-config token clear</code>.</p>
+<h3>Example 2 — multi-user team with isolated workspaces</h3>
+<pre><code class="language-bash"># Add two users; each token is printed exactly once.
+evi web-config users add alice
+# added alice
+#   token: a1b2c3…  (shown once)
+evi web-config users add bob
+
+# Enable multi-user mode in ~/.evi/config.toml:</code></pre>
+<pre><code class="language-toml">[web]
+multi_user = true</code></pre>
+<pre><code class="language-bash">evi web</code></pre>
+<p>Alice signs in with her token and sees only her sessions, transcripts (<code>~/.evi/users/alice/transcripts</code>), and memory (<code>~/.evi/users/alice/memory</code>); Bob sees only his. Revoke Bob instantly with <code>evi web-config users remove bob</code>.</p>
+<h3>Example 3 — deep links</h3>
+<pre><code class="language-bash"># Print a link to your most recent session:
+evi link
+# evi://session/9f3c2a7b1e4d6058
+
+# Link to a fresh chat:
+evi link new
+# evi://new
+
+# See where a workflow link routes (no app needed):
+evi link --open "evi://workflow/research"
+# workflow research -&gt; /?workflow=research</code></pre>
+<p>Clicking <code>evi://session/9f3c2a7b1e4d6058</code> focuses the desktop app on that tab; pasting <code>http://127.0.0.1:8473/?session=9f3c2a7b1e4d6058</code> into a browser does the same thing against a running server.</p>
+<h3>Example 4 — desktop as a thin client, no local model</h3>
+<pre><code class="language-bash"># Point the desktop window at an eVi already running on a GPU box.
+# (PowerShell)
+$env:EVI_REMOTE_URL = "http://gpu-box:8473"
+# (bash)
+export EVI_REMOTE_URL="http://gpu-box:8473"</code></pre>
+<p>Launch the desktop app: it skips the Python spawn, waits for <code>http://gpu-box:8473/api/health</code>, and loads it. Disable the background updater in this or any build with <code>EVI_AUTO_UPDATE=0</code>.</p>
+<h2>Notes / limits</h2>
+<ul><li><strong>Open by default, on purpose.</strong> With no <code>auth_token</code> and no users, <code>/api/*</code> is unauthenticated — safe for a localhost-only bind, risky if you expose the port. Set a token (or multi-user) before binding to a non-loopback host.</li><li><strong>Tokens are compared with <code>secrets.compare_digest</code></strong> (constant-time). The token is printed only once on rotate/add; lost tokens must be rotated/re-issued, not recovered.</li><li><strong>Auth re-reads config per request</strong>, so <code>evi web-config token rotate</code> takes effect without restarting the server (though the in-app message still suggests a restart out of caution).</li><li><strong>The <code>?token=</code> query form leaks the token into logs/history</strong> more readily than a header. It exists only for <code>&lt;img&gt;</code> and SSE URLs that can't carry headers — prefer the header everywhere else.</li><li><strong>Multi-user isolation covers personal data only</strong> (sessions/transcripts/memory). Skills, plugins, and the single shared <code>config.toml</code> are common to everyone — don't treat a user token as a sandbox boundary for capabilities.</li><li><strong>Routine webhooks bypass web auth</strong> by design: <code>/api/routine/&lt;token&gt;</code> authenticates with its own unguessable path token, so external callers don't need the web token. Federation (<code>/api/federate</code>) is a separate opt-in (<code>[federation] serve = true</code>) and runs non-interactively (non-auto-approved tools are denied).</li><li><strong>Settings: deferred sections.</strong> Changing <code>[tools]</code> or <code>[auto]</code> won't affect existing chats — those bind at session creation, so they apply to new chats only (the UI hints this).</li><li><strong>Updater is desktop-only and signature-pinned.</strong> It will not install an unsigned or wrongly-signed bundle. The CLI/web package updates the ordinary way: <code>pip install -U evi-assistant</code>. Auto-update is skipped entirely in <code>EVI_REMOTE_URL</code> mode and when <code>EVI_AUTO_UPDATE=0</code>.</li><li><strong>Update install kills the sidecar first.</strong> On Windows the installer would otherwise fail with "Error opening file for writing" because the running <code>evi-server</code> locks its onedir DLLs. This is automatic; just let it restart.</li><li><strong>Deep links fail safe.</strong> Any malformed or unknown <code>evi://</code> route resolves to <code>/</code> rather than erroring — so a bad link opens the home view instead of breaking the shell.</li><li><strong>Stable-port caveat.</strong> A second desktop instance can't take port 8473 and falls back to a random port, which means that second launch starts with a fresh webview origin (empty <code>localStorage</code> — no remembered tabs).</li></ul>
+<h2>Relevant source files</h2>
+<ul><li><code>C:\evi\evi\apps\web\server.py</code> — FastAPI app, auth middleware, <code>/api/config</code>, multi-user scoping, session/SSE endpoints.</li><li><code>C:\evi\evi\apps\web\static\index.html</code> — single-page UI: login overlay, settings panel, <code>?session=</code>/<code>?workflow=</code> handling, desktop menu bridge, update toast.</li><li><code>C:\evi\evi\deeplinks.py</code> — <code>build_link</code>, <code>parse_link</code>, <code>to_web_path</code> for the <code>evi://</code> scheme.</li><li><code>C:\evi\desktop\src-tauri\src\main.rs</code> — Tauri shell: port pick, server/sidecar spawn, menu/tray, deep-link routing, signed auto-updater.</li><li><code>C:\evi\evi\apps\cli\main.py</code> — <code>evi web</code>, <code>evi web-config token/users</code>, <code>evi link</code> commands.</li><li><code>C:\evi\evi\config.py</code> — <code>WebSettings</code> (<code>auth_token</code>, <code>multi_user</code>) and other config sections.</li><li><code>C:\evi\docs\configuration.md</code> — concise companion reference (multi-user, deep links, env vars).</li></ul>
+    </article>
+    <a class="doc-source" href="https://github.com/evi-assistant/evi-ai/blob/main/docs/features/web-desktop.md">Edit on GitHub ↗</a>
+  </main>
+  <footer class="doc-foot">
+    <a href="index.html">← All documentation</a>
+    <span>eVi — local-first personal AI assistant</span>
+  </footer>
+</body>
+</html>

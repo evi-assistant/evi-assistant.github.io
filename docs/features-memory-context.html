@@ -1,0 +1,127 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Memory &amp; Context management — eVi docs</title>
+  <meta name="description" content="eVi has two complementary mechanisms for remembering things across time: — eVi documentation." />
+  <link rel="stylesheet" href="../styles.css" />
+  <link rel="stylesheet" href="docs.css" />
+  <link rel="icon" href="../favicon.svg" type="image/svg+xml" />
+</head>
+<body>
+  <header class="nav">
+    <a class="brand" href="../index.html" aria-label="eVi home">
+      <span class="brand-mark">e<span class="brand-accent">Vi</span></span>
+    </a>
+    <nav class="nav-links">
+      <a href="index.html">Docs</a>
+      <a href="../index.html#install">Install</a>
+      <a href="../index.html#download">Download</a>
+      <a class="nav-gh" href="https://github.com/evi-assistant/evi-ai">GitHub ↗</a>
+    </nav>
+  </header>
+  <main class="doc-main">
+    <article class="doc">
+<h1>Memory &amp; Context management</h1>
+<h2>Overview</h2>
+<p>eVi has two complementary mechanisms for remembering things across time:</p>
+<ul><li><strong>Memory</strong> — durable, human-readable notes stored as one Markdown file per topic under <code>~/.evi/memory/</code>. These survive across sessions and process restarts. The assistant decides what is worth keeping (your preferences, project facts, contact details, decisions) and writes it itself; you can also manage these files by hand. An auto-maintained index of every memory is folded into the system prompt so the model always knows <em>what</em> is stored without loading every byte.</li><li><strong>Context management</strong> — keeps a single conversation from overflowing the model's context window. As history grows, eVi automatically summarises the oldest turns into one compact note (compaction), and gives you tools to see and control where the window is being spent.</li></ul>
+<p>Memory is for facts that should outlive a conversation. Context management is about fitting the <em>current</em> conversation into a finite window.</p>
+<p>Both are local-first and private: nothing leaves your machine except the LLM calls you already make to your configured backend.</p>
+<h2>How it works</h2>
+<h3>Memory</h3>
+<p>Memory is intentionally simple — markdown on disk, one file per topic, keyed by a safe filename with no extension (source: <code>evi/memory.py</code>).</p>
+<ul><li><strong>Storage location</strong>: <code>~/.evi/memory/</code> (<code>%USERPROFILE%\.evi\memory\</code> on Windows). Each entry is <code>&lt;name&gt;.md</code>.</li><li><strong>Names</strong> must match <code>^[A-Za-z0-9_\-]+$</code> (letters, digits, dash, underscore), max 64 characters.</li><li><strong>Size</strong>: each entry is capped at 64 KB; a write that would exceed this is rejected.</li><li><strong>The index</strong>: a file <code>INDEX.md</code> is regenerated automatically on every write/delete so it always matches the directory. The same content is rendered into the agent's system prompt as a <code>## Memory index</code> block — a bullet list of <code>name — summary [tags]</code>, where the <em>summary</em> is the first non-empty line of the file. The prompt instructs the model to call <code>recall(name)</code> to pull full contents on demand.</li><li><strong>Tags</strong>: optional, comma-separated, case-insensitive. They are stored as an invisible trailing HTML comment (<code>&lt;!-- tags: ... --&gt;</code>) so they never show up in rendered Markdown or disturb the first-line summary. Untagged legacy files parse cleanly as tag-less.</li><li><strong>Soft delete</strong>: deleting a memory (via the <code>forget</code> tool) does not erase it — the file is moved into <code>~/.evi/memory/.attic/</code> with a timestamp suffix (e.g. <code>preferences-20260527_120000.md</code>), so a mistaken delete is recoverable by hand. (There is also a permanent hard-delete path used sparingly internally.)</li></ul>
+<p>The model interacts with memory through five tools (source: <code>evi/tools/memory.py</code>), all in the <code>memory</code> permission category:</p>
+<table><thead><tr><th>Tool</th><th>What it does</th></tr></thead><tbody><tr><td><code>remember(name, content, tags="")</code></td><td>Save/overwrite a memory. Empty <code>tags</code> keeps any existing tags.</td></tr><tr><td><code>recall(name)</code></td><td>Return the full body of a memory.</td></tr><tr><td><code>forget(name)</code></td><td>Soft-delete a memory (moves it to <code>.attic/</code>).</td></tr><tr><td><code>list_memories()</code></td><td>JSON list of <code>{name, summary, tags}</code>.</td></tr><tr><td><code>recall_by_tag(tag)</code></td><td>JSON list of memories carrying a tag.</td></tr></tbody></table>
+<p>Memory is only attached to the agent when the <code>memory</code> tool toggle is on (it is on by default). It is wired into both the CLI REPL and the Web UI; in the multi-user web mode each user gets their own memory directory under <code>~/.evi/users/&lt;name&gt;/memory/</code>.</p>
+<h3>Context management (compaction)</h3>
+<p>Token counts are estimated, not tokenized: eVi uses the ~4-chars-per-token rule of thumb (source: <code>evi/llm/agent.py</code> <code>_approx_tokens</code>, and <code>evi/context_report.py</code>). This is good enough for "how full is my context" reporting, not a substitute for a real tokenizer.</p>
+<p>Two things drive <strong>automatic compaction</strong> (<code>_maybe_autocompact</code>), checked after each turn:</p>
+<ol><li><strong>Message count</strong> — if the in-memory history exceeds <code>llm.compact_after_messages</code> messages.</li><li><strong>Capacity</strong> — if estimated tokens reach <code>llm.compact_when_pct</code> percent of <code>llm.context_size</code>.</li></ol>
+<p>When either fires, <code>compact_history()</code> runs:</p>
+<ul><li>The original system prompt (index 0) and the most recent <code>llm.compact_keep_recent</code> messages are kept verbatim.</li><li>Everything in between is sent to your <em>same</em> LLM backend in a one-shot call that produces a concise summary (under ~400 words, preserving facts, decisions, file paths, preferences, and unfinished tasks).</li><li>That summary replaces the middle as a single <code>system</code> message prefixed <code>[compacted: N earlier messages summarised]</code>.</li><li><strong>Fail-safe</strong>: if the summary call fails or comes back empty, history is left untouched — a transient model outage never loses context. A <code>before_compact</code> lifecycle hook can also veto compaction.</li></ul>
+<p>The <strong>context report</strong> (<code>evi/context_report.py</code>) categorises history into four buckets — <code>system</code>, <code>user</code> (you), <code>assistant</code>, and <code>tools</code> (tool calls + tool results) — and reports tokens per bucket, total used, the ceiling, and percent full.</p>
+<h2>Setup</h2>
+<h3>Config file</h3>
+<p>Settings live in <code>~/.evi/config.toml</code> (<code>%USERPROFILE%\.evi\config.toml</code>). First run writes defaults. You can also point eVi elsewhere with the <code>EVI_HOME</code> environment variable, which relocates the whole <code>~/.evi/</code> tree (memory included).</p>
+<p><strong>Memory tool toggle</strong> — section <code>[tools]</code>:</p>
+<pre><code class="language-toml">[tools]
+memory = true   # default: on — attaches the memory store + tools to the agent</code></pre>
+<p>If you want memory writes/reads/deletes to happen without a permission prompt, the <code>memory</code> category is already in the default auto-approve list — section <code>[auto]</code>:</p>
+<pre><code class="language-toml">[auto]
+auto_approve = ["fs", "code", "memory", "skills", "image"]</code></pre>
+<p><strong>Compaction + context window</strong> — section <code>[llm]</code>. Defaults shown:</p>
+<pre><code class="language-toml">[llm]
+context_size          = 32768   # approx token ceiling for your model (0 = unknown)
+compact_after_messages = 40     # compact once history exceeds this many messages (0 = disabled)
+compact_keep_recent    = 10     # most-recent messages left un-summarised
+compact_when_pct       = 85     # compact when usage reaches this % of context_size</code></pre>
+<p>Notes on these keys:</p>
+<ul><li>Set <code>context_size</code> to match the model you actually run. It powers both the usage display and pre-emptive compaction. Leaving it <code>0</code> disables the percentage-based trigger and the "of N" display. <code>evi doctor</code> will nudge you if <code>context_size</code> looks mismatched against the model's native window.</li><li>Set <code>compact_after_messages = 0</code> (and rely on <code>compact_when_pct</code>, or set that to 0 too) to disable automatic compaction entirely. <code>compact_keep_recent</code> is internally floored at 2.</li></ul>
+<h3>Optional: pip extras</h3>
+<p>Core memory and compaction need <strong>no extra dependencies</strong> — it's plain Markdown files and a call to your existing LLM backend. Optional integrations:</p>
+<ul><li><strong>Obsidian sync</strong> ships in the base CLI (<code>evi obsidian ...</code>) and just reads/writes Markdown into a vault folder — no extra install.</li><li>Embeddings-based semantic file search (<code>[tools] index</code>) is a separate feature and not required for memory.</li></ul>
+<h2>Usage</h2>
+<h3>REPL slash commands (CLI and Web both)</h3>
+<ul><li><code>/context</code> or <code>/ctx</code> — show the per-bucket context breakdown (system prompt / you / assistant / tools), total tokens, ceiling, and percent full. The bar turns green/yellow/red as you approach the limit.</li><li><code>/compact</code> — force compaction now (summarise older history into a single note to free context). Prints how many messages were collapsed, or notes that history is too short.</li></ul>
+<p>The assistant uses the <code>remember</code> / <code>recall</code> / <code>forget</code> / <code>list_memories</code> / <code>recall_by_tag</code> tools on its own during conversation — just talk to it ("remember that I prefer tabs over spaces", "what do you have stored about project-x?").</p>
+<h3>Web UI</h3>
+<ul><li>Slash commands above work in the chat input.</li><li>The <strong>context usage chip</strong> in the UI shows how full the window is; clicking it surfaces the same breakdown as <code>/context</code>.</li></ul>
+<h3>CLI commands</h3>
+<ul><li><code>evi dream [--hours N]</code> — review the last <em>N</em> hours (default 24) of transcripts and curate long-term memory automatically (add/remove/change entries). Requires transcripts to be enabled (<code>[tools] transcripts = true</code>, the default, writing to <code>~/.evi/transcripts/</code>). Deletions during dreaming are soft (recoverable from <code>.attic/</code>).</li><li><code>evi obsidian status [--sub &lt;subfolder&gt;]</code> — show what differs between memory and an Obsidian vault without changing anything.</li><li><code>evi obsidian push</code> / <code>evi obsidian pull</code> / <code>evi obsidian sync</code> — copy memory into a vault, read a vault into memory, or two-way sync (each supports <code>--dry-run</code>).</li></ul>
+<h3>Managing files by hand</h3>
+<p>Because memory is just Markdown, you can edit, add, or remove files directly in <code>~/.evi/memory/</code>. After editing config or memory while a session is open, <code>/reload</code> re-reads <code>config.toml</code> and refreshes the memory/skill index without restarting.</p>
+<h2>Examples</h2>
+<h3>Example 1 — tune compaction for a small-context model</h3>
+<p>You're running a 7B model with an 8K window and want eVi to compact earlier and keep fewer recent turns. Edit <code>~/.evi/config.toml</code>:</p>
+<pre><code class="language-toml">[llm]
+model            = "qwen2.5-7b-instruct"
+context_size     = 8192
+compact_when_pct = 70    # start compacting at 70% full instead of 85%
+compact_keep_recent = 6  # keep the last 6 messages verbatim</code></pre>
+<p>Then in a REPL session, check where the window is going and force a compaction if needed:</p>
+<pre><code class="language-text">&gt; /ctx
+Context — 52 messages, ~5,910 tokens of 8,192 (72%)
+  system prompt  ########----------------  1,420 (24%)
+  you            #####-------------------   980 (16%)
+  assistant      ########----------------  1,510 (25%)
+  tools          ########----------------  2,000 (33%)
+
+&gt; /compact
+compacted 38 messages into a summary</code></pre>
+<h3>Example 2 — seed a memory by hand and let the model use it</h3>
+<p>Create a memory file directly (the first non-empty line becomes the index summary; the trailing comment carries tags):</p>
+<pre><code class="language-bash"># ~/.evi/memory/preferences.md
+# My working preferences
+
+- Editor: Neovim, tabs not spaces
+- Always run tests before committing
+- Prefer concise answers
+
+&lt;!-- tags: workflow, personal --&gt;</code></pre>
+<p>On the next turn eVi rebuilds <code>INDEX.md</code> and exposes this in its system prompt, so the model can fetch it on demand. The equivalent flow driven entirely by the assistant's tools looks like:</p>
+<pre><code class="language-text">remember(name="preferences",
+         content="# My working preferences\n\n- Editor: Neovim, tabs not spaces\n...",
+         tags="workflow, personal")
+  -&gt; saved memory 'preferences' to ~/.evi/memory/preferences.md [tags: workflow, personal]
+
+recall_by_tag(tag="workflow")
+  -&gt; [{"name": "preferences", "summary": "My working preferences", "tags": ["workflow", "personal"]}]
+
+recall(name="preferences")
+  -&gt; # My working preferences ...</code></pre>
+<h2>Notes / limits</h2>
+<ul><li><strong>Token counts are approximate.</strong> The ~4-chars/token estimate ignores image/data-URL parts and isn't a real tokenizer. Treat <code>/context</code> percentages as guidance, not gospel.</li><li><strong>Compaction is lossy by design.</strong> Older turns are replaced by a summary; details the summary omits are gone from the live context (though full transcripts remain on disk if <code>[tools] transcripts</code> is on). The original system prompt and the most recent <code>compact_keep_recent</code> messages are always preserved verbatim.</li><li><strong>Fail-open behavior.</strong> If the summarisation call fails or returns nothing, history is left unchanged rather than dropped — a model outage never silently destroys your conversation. A <code>before_compact</code> hook can veto compaction.</li><li><strong>Deletes are recoverable.</strong> <code>forget</code> / <code>evi dream</code> removals move files to <code>~/.evi/memory/.attic/</code> with a timestamp; restore by moving the file back (a restore won't clobber a current entry of the same name). Only the internal hard-delete bypasses the attic.</li><li><strong>Name and size constraints.</strong> Memory names are restricted to <code>[A-Za-z0-9_\-]</code> (max 64 chars) and bodies to 64 KB; oversized or badly-named writes are rejected rather than truncated.</li><li><strong>Memory must be enabled.</strong> If <code>[tools] memory = false</code>, the store and its tools are not attached and the model has no persistent memory for that session.</li><li><strong>Per-user isolation.</strong> In multi-user web mode, memory is namespaced per user under <code>~/.evi/users/&lt;name&gt;/memory/</code>; users do not see each other's memories.</li><li><strong>Privacy.</strong> Everything is plain Markdown on your disk. The only network egress is the LLM calls you already make (including the one-shot summary used during compaction, which goes to your configured backend).</li></ul>
+<h2>Reference</h2>
+<ul><li><code>~/.evi/config.toml</code> — <code>[tools] memory</code>, <code>[auto] auto_approve</code>, and <code>[llm]</code> compaction keys (<code>context_size</code>, <code>compact_after_messages</code>, <code>compact_keep_recent</code>, <code>compact_when_pct</code>).</li><li><code>~/.evi/memory/</code> — memory files + auto-generated <code>INDEX.md</code>; <code>~/.evi/memory/.attic/</code> — soft-deleted entries.</li><li><code>~/.evi/transcripts/</code> — session logs used by <code>evi dream</code>.</li><li>Source: <code>evi/memory.py</code>, <code>evi/tools/memory.py</code>, <code>evi/context_report.py</code>, <code>evi/llm/agent.py</code> (compaction), <code>evi/config.py</code>.</li></ul>
+    </article>
+    <a class="doc-source" href="https://github.com/evi-assistant/evi-ai/blob/main/docs/features/memory-context.md">Edit on GitHub ↗</a>
+  </main>
+  <footer class="doc-foot">
+    <a href="index.html">← All documentation</a>
+    <span>eVi — local-first personal AI assistant</span>
+  </footer>
+</body>
+</html>

@@ -1,0 +1,153 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Agent SDK (`evi.sdk`) — eVi docs</title>
+  <meta name="description" content="eVi is a library first and a CLI/app second. The same primitives the CLI and the web app are built on are importable under one stable namespace — evi.sdk — so you can embed an eVi… — eVi documentation." />
+  <link rel="stylesheet" href="../styles.css" />
+  <link rel="stylesheet" href="docs.css" />
+  <link rel="icon" href="../favicon.svg" type="image/svg+xml" />
+</head>
+<body>
+  <header class="nav">
+    <a class="brand" href="../index.html" aria-label="eVi home">
+      <span class="brand-mark">e<span class="brand-accent">Vi</span></span>
+    </a>
+    <nav class="nav-links">
+      <a href="index.html">Docs</a>
+      <a href="../index.html#install">Install</a>
+      <a href="../index.html#download">Download</a>
+      <a class="nav-gh" href="https://github.com/evi-assistant/evi-ai">GitHub ↗</a>
+    </nav>
+  </header>
+  <main class="doc-main">
+    <article class="doc">
+<h1>Agent SDK (<code>evi.sdk</code>)</h1>
+<p>eVi is a <strong>library first</strong> and a CLI/app second. The same primitives the CLI and the web app are built on are importable under one stable namespace — <code>evi.sdk</code> — so you can embed an eVi agent in your own Python program, build a custom tool, fan work out to subagents, get schema-valid JSON, or run a turn headless in CI.</p>
+<blockquote><p><strong>Why a namespace re-export?</strong> The internal module layout (<code>evi.llm</code>, <code>evi.tools</code>, <code>evi.mcp</code>, …) can move between releases. <code>evi.sdk</code> is the curated, supported surface — import from here and your code keeps working.</p></blockquote>
+<p>This page is the reference. For runnable code see <a href="https://github.com/evi-assistant/evi-ai/blob/main/examples/python" target="_blank" rel="noopener"><code>examples/python/</code></a> and its <a href="https://github.com/evi-assistant/evi-ai/blob/main/examples/python/README.md" target="_blank" rel="noopener">README</a>. For <em>which OpenAI/vendor model features</em> the core supports, see <a href="sdk-coverage.html" target="_blank" rel="noopener">sdk-coverage.md</a> (a different axis — that doc is about the wire API, this one is about the Python surface).</p>
+<h2>Install</h2>
+<p>eVi installs as a normal Python package; the SDK ships with it (<code>py.typed</code>, so your type checker sees the annotations):</p>
+<pre><code class="language-bash">pip install -e .            # from a checkout
+# or your normal eVi install — the SDK is in-tree, nothing extra to add</code></pre>
+<p>You need a model backend reachable per <code>~/.evi/config.toml</code> (Ollama, llama.cpp, vLLM, or any OpenAI-compatible endpoint). <code>build_agent()</code> reads that config.</p>
+<h2>Quick start</h2>
+<pre><code class="language-python">from evi.sdk import build_agent, run_headless
+
+agent = build_agent()                       # batteries: tools + memory + skills + hooks
+print(run_headless(agent, "What is eVi?").text)</code></pre>
+<h2><code>build_agent</code> — the convenience constructor</h2>
+<p><code>build_agent</code> assembles an <a href="https://github.com/evi-assistant/evi-ai/blob/main/docs#agent" target="_blank" rel="noopener"><code>Agent</code></a> from your config with sensible defaults. Every argument is keyword-only:</p>
+<pre><code class="language-python">build_agent(
+    *,
+    config=None,                 # a Config; defaults to Config.load()
+    system_prompt=None,          # override the base system prompt
+    client=None,                 # a pre-built OpenAI-compatible client
+    tools=None,                  # explicit tools (Tool objects OR @tool fns)
+    tool_categories=None,        # select built-ins by category, e.g. ["fs","code"]
+    enable_memory=None,          # None = follow config toggle; True/False forces
+    enable_skills=None,          # None = follow config toggle
+    enable_project=True,         # load EVI.md / project context
+    enable_hooks=True,           # load ~/.evi/hooks.toml
+    enable_guardrails=True,      # load ~/.evi/guardrails.toml (if enabled)
+    permission_callback=None,    # tool-permission prompt; None = non-interactive
+    permission_batch_callback=None,
+    transcripts=None,            # a TranscriptStore to log turns to
+    session_id=None,
+) -&gt; Agent</code></pre>
+<p>Tool selection precedence:</p>
+<ol><li><code>tools=[...]</code> — use exactly these (a <code>Tool</code>, or a <code>@tool</code>-decorated function, which the SDK resolves from the registry). Pass <code>tools=[]</code> for a no-tool agent.</li><li><code>tool_categories=[...]</code> — select built-ins by category, ignoring config toggles.</li><li>neither — select built-ins per the <code>[tools]</code> toggles in your config.</li></ol>
+<blockquote><p>The CLI's own agent builder delegates to <code>build_agent</code> — it adds only its runtime concerns (spawning MCP servers, interactive permission prompts). There is one source of truth for how an Agent is assembled.</p></blockquote>
+<h2>Streaming events</h2>
+<p><code>Agent.chat(prompt)</code> is a generator of typed events. Match on the ones you care about; ignore the rest.</p>
+<pre><code class="language-python">from evi.sdk import build_agent, TextDelta, ToolCall, ToolResult, RouteInfo, Done, Error
+
+for ev in build_agent().chat("List the Python files here"):
+    if isinstance(ev, RouteInfo):   print(f"[{ev.route} -&gt; {ev.model}]")
+    elif isinstance(ev, TextDelta): print(ev.text, end="")
+    elif isinstance(ev, ToolCall):  print(f"\n[call] {ev.name}")
+    elif isinstance(ev, ToolResult):print(f"[result] {ev.name}")
+    elif isinstance(ev, Error):     print(ev.message); break
+    elif isinstance(ev, Done):      break</code></pre>
+<p>Event types (all exported from <code>evi.sdk</code>):</p>
+<table><thead><tr><th>Event</th><th>Fields</th><th>Meaning</th></tr></thead><tbody><tr><td><code>TextDelta</code></td><td><code>text</code></td><td>A chunk of assistant text.</td></tr><tr><td><code>ThinkingDelta</code></td><td><code>text</code></td><td>Reasoning chunk (models that emit <code>&lt;think&gt;</code>).</td></tr><tr><td><code>ToolCall</code></td><td><code>name</code>, <code>arguments</code></td><td>The model asked to call a tool.</td></tr><tr><td><code>ToolResult</code></td><td><code>name</code>, <code>output</code>, <code>citations</code></td><td>A tool finished.</td></tr><tr><td><code>ToolProgress</code></td><td><code>names</code>, <code>elapsed</code></td><td>A slow (<code>long=True</code>) tool is still running.</td></tr><tr><td><code>UsageStats</code></td><td><code>prompt_tokens</code>, <code>completion_tokens</code>, <code>total_tokens</code></td><td>Real token counts.</td></tr><tr><td><code>LogProbs</code></td><td><code>tokens</code>, <code>avg_logprob</code>, …</td><td>Per-token confidence (if enabled).</td></tr><tr><td><code>Guardrail</code></td><td><code>direction</code>, <code>blocked</code>, <code>message</code>, …</td><td>A guardrail fired.</td></tr><tr><td><code>RouteInfo</code></td><td><code>route</code>, <code>model</code></td><td>The per-turn routing decision.</td></tr><tr><td><code>Done</code></td><td><code>reason</code></td><td>Turn complete.</td></tr><tr><td><code>Error</code></td><td><code>message</code></td><td>Turn failed.</td></tr></tbody></table>
+<p>For a non-streaming convenience, use <code>run_headless(agent, prompt)</code> → a <code>HeadlessResult(text, tools, usage, error)</code>.</p>
+<h2>Custom tools</h2>
+<pre><code class="language-python">from evi.sdk import tool, build_agent, run_headless
+
+@tool(category="math", description="Add two integers")
+def add(a: int, b: int) -&gt; int:
+    return a + b
+
+agent = build_agent(tools=[add])
+print(run_headless(agent, "What is 19 + 23?").text)</code></pre>
+<p><code>@tool</code> reads the function's type hints to build the JSON schema and the first docstring line as the description (override with <code>description=</code>). A tool may return a <code>str</code>, a JSON-able object, or a <code>ToolOutput(text, citations)</code> to attach source citations. Use <code>register_builtin_tools()</code> if you need to populate the full built-in <code>REGISTRY</code> yourself.</p>
+<h2>Subagents</h2>
+<pre><code class="language-python">from evi.sdk import run_subagents_parallel
+
+results = run_subagents_parallel(
+    ["Summarise JWTs", "Summarise UUIDs"],
+    system_prompt="You are terse.",
+    tool_categories=(),       # grant tool categories per subagent
+    max_workers=4,
+)
+for task, answer in results:   # input order preserved
+    print(task, "-&gt;", answer)</code></pre>
+<p><code>run_subagent(...)</code> is the single-task form. Subagent <em>profiles</em> (named role + tool presets, extendable by plugins) are available via <code>SUBAGENT_PROFILES</code>, <code>all_profiles()</code>, and <code>get_profile(name)</code>.</p>
+<h2>Structured output (JSON Schema)</h2>
+<pre><code class="language-python">import json
+from evi.sdk import as_response_format, build_agent, run_headless
+
+schema = {"type": "object",
+          "properties": {"sentiment": {"type": "string"}},
+          "required": ["sentiment"], "additionalProperties": False}
+
+agent = build_agent(tools=[])
+rf = as_response_format(schema, name="verdict")
+out = run_headless(agent, "Classify: 'I love this'.", response_format=rf)
+print(json.loads(out.text))    # validates against schema</code></pre>
+<p><code>load_schema(spec)</code> loads a schema from a file path, inline JSON, or a named preset; <code>as_response_format(...)</code> wraps a plain schema into the <code>response_format</code> shape the backend expects.</p>
+<h2>Headless / CI</h2>
+<pre><code class="language-python">from evi.sdk import build_agent, run_headless, to_json
+
+res = run_headless(build_agent(tool_categories=["fs"]), "Does a README exist?")
+print(to_json(res))            # {"text":..., "tools":[...], "usage":{...}, "error":...}
+raise SystemExit(1 if res.error else 0)</code></pre>
+<p>See <a href="https://github.com/evi-assistant/evi-ai/blob/main/examples/python/headless_ci.py" target="_blank" rel="noopener"><code>headless_ci.py</code></a>.</p>
+<h2>Sessions &amp; checkpoints</h2>
+<pre><code class="language-python">from evi.sdk import list_sessions, history_from_transcript, export_markdown
+from evi.sdk import list_checkpoints, rewind
+
+for s in list_sessions(limit=5):
+    print(s.session_id, s.when, s.summary)
+
+# undo file writes an agent made this session
+for path, restored in rewind():
+    print("restored", path)</code></pre>
+<h2>MCP</h2>
+<p><code>MCPManager</code> is the client side — connect to MCP servers from <code>mcp.json</code> and expose their tools to an agent. (To publish <em>eVi itself</em> as an MCP server, use <code>evi mcp serve</code>; see <a href="features-mcp.html" target="_blank" rel="noopener">features/mcp.md</a>.)</p>
+<h2>Orchestration: ultracode &amp; workflows</h2>
+<pre><code class="language-python">from evi.sdk import run_ultracode, make_runner, UltraConfig, build_agent
+
+run_one = make_runner(lambda sp: build_agent(system_prompt=sp, tool_categories=["code"]))
+result = run_ultracode("design a retry policy", run_one=run_one, cfg=UltraConfig(breadth=3))
+print(result.answer)</code></pre>
+<p><code>fan_out(fn, items, max_workers=8)</code> is the shared concurrency primitive (results in input order); <code>run_workflow(...)</code> runs a declarative multi-step workflow. See <a href="features-ultracode.html" target="_blank" rel="noopener">features/ultracode.md</a> and <a href="features-agents.html" target="_blank" rel="noopener">features/agents.md</a>.</p>
+<h2>Telemetry</h2>
+<pre><code class="language-python">from evi.sdk import otel
+otel.init_telemetry()                 # honors ~/.evi/config.toml [otel]
+with otel.span("my-operation"):
+    ...</code></pre>
+<p>See <a href="features-observability.html" target="_blank" rel="noopener">features/observability.md</a>.</p>
+<h2>Stability</h2>
+<p>Everything in <code>evi.sdk.__all__</code> is the supported surface and follows the project's semver intent. Reaching into <code>evi.llm.*</code> / <code>evi.tools.*</code> internals directly is unsupported and may break between releases — if something you need isn't re-exported, open an issue so it can be added to the curated surface.</p>
+    </article>
+    <a class="doc-source" href="https://github.com/evi-assistant/evi-ai/blob/main/docs/sdk.md">Edit on GitHub ↗</a>
+  </main>
+  <footer class="doc-foot">
+    <a href="index.html">← All documentation</a>
+    <span>eVi — local-first personal AI assistant</span>
+  </footer>
+</body>
+</html>

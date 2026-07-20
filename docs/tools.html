@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Tool reference — eVi docs</title>
+  <meta name="description" content="Every tool eVi ships with, grouped by category. Each tool is enabled via tools.&lt;category&gt; = true in ~/.evi/config.toml. Whether the agent can invoke it *without prompting* depends… — eVi documentation." />
+  <link rel="stylesheet" href="../styles.css" />
+  <link rel="stylesheet" href="docs.css" />
+  <link rel="icon" href="../favicon.svg" type="image/svg+xml" />
+</head>
+<body>
+  <header class="nav">
+    <a class="brand" href="../index.html" aria-label="eVi home">
+      <span class="brand-mark">e<span class="brand-accent">Vi</span></span>
+    </a>
+    <nav class="nav-links">
+      <a href="index.html">Docs</a>
+      <a href="../index.html#install">Install</a>
+      <a href="../index.html#download">Download</a>
+      <a class="nav-gh" href="https://github.com/evi-assistant/evi-ai">GitHub ↗</a>
+    </nav>
+  </header>
+  <main class="doc-main">
+    <article class="doc">
+<h1>Tool reference</h1>
+<p>Every tool eVi ships with, grouped by category. Each tool is enabled via <code>tools.&lt;category&gt; = true</code> in <code>~/.evi/config.toml</code>. Whether the agent can invoke it <em>without prompting</em> depends on <code>auto.auto_approve</code> (see <a href="configuration.html#tools" target="_blank" rel="noopener">configuration.md</a>).</p>
+<p>Add your own tool by decorating a function with <code>@tool(...)</code> and importing the module from <code>evi/apps/cli/main.py</code> + <code>evi/apps/web/server.py</code> — see <a href="development.html#adding-a-tool" target="_blank" rel="noopener">development.md</a>.</p>
+<h2><code>fs</code> — filesystem (default on)</h2>
+<table><thead><tr><th>Tool</th><th>What it does</th></tr></thead><tbody><tr><td><code>read_file</code></td><td>Read a UTF-8 text file. 256 KB cap for whole-file reads; pass <code>offset</code> (1-based start line) + <code>limit</code> (max lines) to stream a slice of a larger file. Errors string-returned.</td></tr><tr><td><code>write_file</code></td><td>Overwrite or create a file with UTF-8 text. Creates parents.</td></tr><tr><td><code>edit_file</code></td><td>Surgical edit: replace an exact <code>old_string</code> with <code>new_string</code> (once, or <code>replace_all</code>). Preferred over <code>write_file</code> for small changes — cheaper and safer than a full rewrite.</td></tr><tr><td><code>list_dir</code></td><td>List entries in a directory, marked <code>D</code>/<code>F</code> per kind.</td></tr><tr><td><code>find_files</code></td><td>Glob by name (e.g. <code>**/*.py</code>). Skips noise dirs (<code>.git</code>, <code>node_modules</code>, <code>.venv</code>, …). One path per line.</td></tr><tr><td><code>search_files</code></td><td>Literal <strong>regex grep</strong> over file contents (<code>path:line: text</code>). Narrow with <code>glob</code> (e.g. <code>*.py</code>) + <code>ignore_case</code>. For meaning-based search use <code>find_in_project</code> (the <code>index</code> category).</td></tr></tbody></table>
+<p>Safety: 256 KB read cap prevents loading huge blobs into context. There's no implicit traversal check — combine with a hook for that.</p>
+<h2><code>code</code> — code execution (default on)</h2>
+<table><thead><tr><th>Tool</th><th>What it does</th></tr></thead><tbody><tr><td><code>run_python</code></td><td>Run a Python 3 snippet in a subprocess with a 10s timeout. Combined stdout+stderr, capped at 16 KB. Fresh temp cwd.</td></tr><tr><td><code>monitor</code></td><td>Watch for a bounded window (≤300s): <code>kind=file</code> tails NEW lines of a log; <code>kind=command</code> runs a shell command and collects output. Returns early when an <code>until</code> regex matches — for babysitting a build/CI run or tailing a log.</td></tr></tbody></table>
+<p><strong>Not a sandbox.</strong> Acceptable for trusted local use. For untrusted code, wrap with a Docker hook or disable the category.</p>
+<h2><code>memory</code> — long-term memory (default on)</h2>
+<table><thead><tr><th>Tool</th><th>What it does</th></tr></thead><tbody><tr><td><code>remember</code></td><td>Save markdown under <code>~/.evi/memory/&lt;name&gt;.md</code>. Overwrites.</td></tr><tr><td><code>recall</code></td><td>Return the full body of a stored memory.</td></tr><tr><td><code>forget</code></td><td><strong>Soft delete</strong> — move the file to <code>.attic/</code>. Recoverable.</td></tr><tr><td><code>list_memories</code></td><td>JSON of <code>[{name, summary}, …]</code> — same data agents see in the system prompt.</td></tr></tbody></table>
+<p>The memory index is regenerated on every write/delete and appears in the agent's system prompt automatically. The dreaming engine relies on soft-delete to avoid permanently losing data.</p>
+<h2><code>skills</code> — saved instruction packets (default on)</h2>
+<table><thead><tr><th>Tool</th><th>What it does</th></tr></thead><tbody><tr><td><code>list_skills</code></td><td>JSON of <code>[{name, description}, …]</code>.</td></tr><tr><td><code>invoke_skill</code></td><td>Return the full SKILL.md body so the agent can follow it.</td></tr></tbody></table>
+<p>Skills live in <code>~/.evi/skills/&lt;name&gt;/SKILL.md</code> with optional YAML frontmatter (<code>name</code>, <code>description</code>). Example skill in <code>examples/skills/</code>.</p>
+<h2><code>image</code> — ComfyUI image generation (default OFF)</h2>
+<table><thead><tr><th>Tool</th><th>What it does</th></tr></thead><tbody><tr><td><code>generate_image</code></td><td>text2img via ComfyUI. Submits workflow → polls → fetches → saves to <code>~/.evi/images/</code>. Returns JSON <code>{prompt_id, seed, paths}</code>.</td></tr></tbody></table>
+<p>Requires ComfyUI running at <code>comfy.base_url</code> (default <code>http://localhost:8188</code>). Workflow params: <code>prompt</code>, <code>negative_prompt</code>, <code>width</code>, <code>height</code>, <code>steps</code>, <code>seed</code>, <code>cfg</code>, <code>sampler</code>, <code>scheduler</code>.</p>
+<h2><code>subagent</code> — delegated sub-conversations (default OFF)</h2>
+<table><thead><tr><th>Tool</th><th>What it does</th></tr></thead><tbody><tr><td><code>delegate_explore</code></td><td>Spawn a read-only investigation subagent (fs only).</td></tr><tr><td><code>delegate_plan</code></td><td>Spawn a planning subagent (no tools; thinks then returns).</td></tr></tbody></table>
+<p>Each spawns a fresh <code>Agent</code> with the dream-style scoped tool list, runs to completion, returns the final text + a short trace. Useful for keeping the main conversation focused.</p>
+<h2><code>web</code> — web search + fetch (default OFF)</h2>
+<table><thead><tr><th>Tool</th><th>What it does</th></tr></thead><tbody><tr><td><code>web_search</code></td><td>DuckDuckGo search via <code>duckduckgo_search</code>. Returns JSON <code>[{title, url, snippet}, …]</code>.</td></tr><tr><td><code>web_fetch</code></td><td>Download a URL (http/https only) and return extracted text. 1 MB raw cap, 16 KB output cap.</td></tr></tbody></table>
+<p>Requires <code>pip install 'evi-assistant[web-tools]'</code> (gets <code>duckduckgo_search</code> and <code>beautifulsoup4</code>).</p>
+<h2><code>voice</code> — TTS + STT (default OFF)</h2>
+<table><thead><tr><th>Tool</th><th>What it does</th></tr></thead><tbody><tr><td><code>speak_text</code></td><td>Speak text via local TTS (PowerShell SAPI / <code>say</code> / <code>espeak</code>). Returns immediately.</td></tr><tr><td><code>transcribe_microphone</code></td><td>Record <code>duration</code> seconds and transcribe via faster-whisper.</td></tr></tbody></table>
+<p><code>speak</code> needs no Python deps — uses platform CLIs. <code>transcribe_microphone</code> needs <code>pip install 'evi-assistant[stt]'</code> (faster-whisper + sounddevice + numpy).</p>
+<h2><code>computer</code> — mouse / keyboard / screen (default OFF, NEVER auto-approved)</h2>
+<table><thead><tr><th>Tool</th><th>What it does</th></tr></thead><tbody><tr><td><code>screenshot</code></td><td>Capture primary display, save under <code>~/.evi/screenshots/</code>.</td></tr><tr><td><code>click</code></td><td>Move mouse to (x, y) and click. <code>button</code> ∈ <code>{left, right, middle}</code>.</td></tr><tr><td><code>move</code></td><td>Move mouse to (x, y) without clicking.</td></tr><tr><td><code>type_text</code></td><td>Type text at the focused element (per-keystroke pause).</td></tr><tr><td><code>key</code></td><td>Press a named key (<code>enter</code>, <code>tab</code>, <code>f5</code>, …).</td></tr><tr><td><code>scroll</code></td><td>Scroll the wheel. Positive = up.</td></tr><tr><td><code>screen_size</code></td><td>Return primary display dimensions as JSON.</td></tr></tbody></table>
+<p><strong>Safety:</strong></p>
+<ul><li>Category never lives in <code>auto.auto_approve</code> — every action prompts the human.</li><li><code>pyautogui.FAILSAFE = True</code> — slam the mouse into a corner to abort.</li><li>Requires <code>pip install 'evi-assistant[computer]'</code> (pyautogui + pillow).</li></ul>
+<h2><code>sqlite</code> — SQLite queries (default OFF)</h2>
+<table><thead><tr><th>Tool</th><th>What it does</th></tr></thead><tbody><tr><td><code>sqlite_schema</code></td><td>Return tables + columns for a sqlite file as JSON.</td></tr><tr><td><code>sqlite_query</code></td><td>Run a read-only SELECT (rejects DDL/DML). Returns rows JSON.</td></tr></tbody></table>
+<h2><code>pdf</code> — PDF reading (default OFF)</h2>
+<table><thead><tr><th>Tool</th><th>What it does</th></tr></thead><tbody><tr><td><code>read_pdf</code></td><td>Extract text from a PDF. Page-range optional. Caps total output.</td></tr></tbody></table>
+<p>Requires <code>pip install 'evi-assistant[pdf]'</code> (PyMuPDF).</p>
+<h2><code>mcp</code> — Model Context Protocol (default OFF)</h2>
+<p>When enabled, <code>~/.evi/mcp.json</code> is loaded and each MCP server's tools appear in the registry as <code>&lt;server&gt;.&lt;tool&gt;</code>. The catalog is <em>per-installation</em> — see <code>evi mcp list-tools</code> for whatever you've wired up.</p>
+<h2><code>transcripts</code> — session logs (default on, no LLM-facing tool)</h2>
+<p>Background concern, not a callable tool. When <code>tools.transcripts = true</code>, <code>Agent</code> writes every message to <code>~/.evi/transcripts/&lt;day&gt;/&lt;session&gt;.jsonl</code>. This feeds <code>evi dream</code> and <code>evi sessions list/resume</code>.</p>
+<hr>
+<h2>Quick safety table</h2>
+<table><thead><tr><th>Category</th><th>Default</th><th>In default auto_approve</th><th>Notes</th></tr></thead><tbody><tr><td><code>fs</code></td><td>on</td><td>✅</td><td>Read/write to anywhere user can access</td></tr><tr><td><code>code</code></td><td>on</td><td>✅</td><td>Not sandboxed; subprocess timeout 10s</td></tr><tr><td><code>memory</code></td><td>on</td><td>✅</td><td>Soft-delete keeps data recoverable</td></tr><tr><td><code>skills</code></td><td>on</td><td>✅</td><td>Read-only on shipped skill files</td></tr><tr><td><code>image</code></td><td>off</td><td>✅</td><td>Network: ComfyUI on localhost only</td></tr><tr><td><code>subagent</code></td><td>off</td><td>❌</td><td>Spawns more LLM calls</td></tr><tr><td><code>web</code></td><td>off</td><td>❌</td><td>Real network</td></tr><tr><td><code>voice</code></td><td>off</td><td>❌</td><td>Records mic / speaks audio</td></tr><tr><td><code>computer</code></td><td>off</td><td>❌ (never)</td><td>Drives the desktop</td></tr><tr><td><code>sqlite</code></td><td>off</td><td>❌</td><td>DB content may be sensitive</td></tr><tr><td><code>pdf</code></td><td>off</td><td>❌</td><td>File reads</td></tr><tr><td><code>mcp</code></td><td>off</td><td>❌</td><td>Whatever the MCP server does</td></tr></tbody></table>
+<hr>
+<h2>Tool search at scale</h2>
+<p>With many tools enabled (especially several MCP servers), sending every tool schema on every turn bloats the context. Turn on <strong>deferred tool search</strong>:</p>
+<pre><code class="language-toml">[tools]
+tool_search = true            # off by default
+tool_search_threshold = 30    # only defers once the toolset exceeds this</code></pre>
+<p>When active, the <code>fs</code> and <code>memory</code> tools stay loaded and the long tail moves behind a single <code>search_tools</code> meta-tool. The model calls <code>search_tools("git commit")</code> to surface matching tools; they're added to the live toolset and become callable on the next step — still subject to the normal per-category permission gating (<code>search_tools</code> only <em>exposes</em> tools, never runs them). Below the threshold it's a no-op, so it's safe to leave on.</p>
+    </article>
+    <a class="doc-source" href="https://github.com/evi-assistant/evi-ai/blob/main/docs/tools.md">Edit on GitHub ↗</a>
+  </main>
+  <footer class="doc-foot">
+    <a href="index.html">← All documentation</a>
+    <span>eVi — local-first personal AI assistant</span>
+  </footer>
+</body>
+</html>

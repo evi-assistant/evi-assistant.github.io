@@ -1,0 +1,97 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Slash commands — eVi docs</title>
+  <meta name="description" content="Inside a chat you can type /&lt;name&gt; to run a command instead of sending a message. There are two kinds: — eVi documentation." />
+  <link rel="stylesheet" href="../styles.css" />
+  <link rel="stylesheet" href="docs.css" />
+  <link rel="icon" href="../favicon.svg" type="image/svg+xml" />
+</head>
+<body>
+  <header class="nav">
+    <a class="brand" href="../index.html" aria-label="eVi home">
+      <span class="brand-mark">e<span class="brand-accent">Vi</span></span>
+    </a>
+    <nav class="nav-links">
+      <a href="index.html">Docs</a>
+      <a href="../index.html#install">Install</a>
+      <a href="../index.html#download">Download</a>
+      <a class="nav-gh" href="https://github.com/evi-assistant/evi-ai">GitHub ↗</a>
+    </nav>
+  </header>
+  <main class="doc-main">
+    <article class="doc">
+<h1>Slash commands</h1>
+<p>Inside a chat you can type <code>/&lt;name&gt;</code> to run a command instead of sending a message. There are two kinds:</p>
+<ol><li><strong>Built-ins</strong> — REPL/chat controls baked into eVi (<code>/help</code>, <code>/model</code>, <code>/context</code>, …).</li><li><strong>User &amp; plugin commands</strong> — markdown prompt templates you drop in <code>~/.evi/commands/</code> (or that a plugin ships), fired as <code>/&lt;name&gt;</code> with arguments.</li></ol>
+<p>Type <code>/help</code> (or <code>/?</code>) at any time to list everything available in the current session; press <strong>Tab</strong> in the CLI REPL to complete command names.</p>
+<h2>Built-in commands (CLI REPL)</h2>
+<p>The full set, from <code>evi chat</code> / <code>evi sessions resume</code>:</p>
+<table><thead><tr><th>Command</th><th>What it does</th></tr></thead><tbody><tr><td><code>/help</code>, <code>/?</code></td><td>Show the command list (built-ins + your user/plugin commands).</td></tr><tr><td><code>/reset</code></td><td>Clear the conversation history (start fresh, same session).</td></tr><tr><td><code>/exit</code>, <code>/quit</code></td><td>Leave the REPL.</td></tr><tr><td><code>/tools</code></td><td>List the currently active tools.</td></tr><tr><td><code>/model [id]</code></td><td>Show the active model, or switch to <code>id</code> (persisted to config).</td></tr><tr><td>`/goal [text\</td><td>clear]`</td><td>Set / clear / show the ongoing goal (prepended to each turn).</td></tr><tr><td><code>/plan [task]</code></td><td>Run the next turn in plan-only mode (no tools); optional inline task.</td></tr><tr><td>`/auto [on\</td><td>off]`</td><td>Auto-approve every tool call for this session (no <code>on/off</code> = show state).</td></tr><tr><td><code>/compact</code></td><td>Summarise older history into one note to free context.</td></tr><tr><td><code>/context</code>, <code>/ctx</code></td><td>Show where the context window is being spent (per-bucket breakdown).</td></tr><tr><td><code>/recent [n]</code></td><td>List recent sessions (resume via <code>evi sessions resume</code>).</td></tr><tr><td><code>/image &lt;path&gt;</code></td><td>Attach an image to the next turn (vision/VLM models).</td></tr><tr><td>`/effort [low\</td><td>medium\</td><td>high\</td><td>max]`</td><td>Set reasoning effort for subsequent turns.</td></tr><tr><td>`/fast [on\</td><td>off\</td><td>&lt;model-id&gt;]`</td><td>Toggle fast mode (swap to a smaller model).</td></tr><tr><td><code>/json &lt;prompt&gt;</code></td><td>Force JSON-object output for the next turn.</td></tr><tr><td><code>/schema &lt;file&gt; [prompt]</code></td><td>Constrain the next turn to a JSON Schema (file path).</td></tr><tr><td><code>/notools &lt;prompt&gt;</code></td><td>Answer the next turn without using any tools.</td></tr><tr><td><code>/forcetool &lt;name&gt; &lt;prompt&gt;</code></td><td>Force the model to call a specific tool.</td></tr><tr><td><code>/reload</code></td><td>Re-read <code>config.toml</code> without restarting.</td></tr><tr><td><code>/audio &lt;path&gt;</code></td><td>Transcribe an audio file and send the text as the next turn.</td></tr><tr><td><code>/audioraw &lt;path&gt; [prompt]</code></td><td>Attach raw audio (omni models) / auto-transcribe otherwise.</td></tr><tr><td>`/speak [on\</td><td>off]`</td><td>Auto-speak assistant replies sentence-by-sentence (TTS).</td></tr><tr><td>`/predict &lt;text\</td><td>file &lt;p&gt;\</td><td>clear&gt;`</td><td>Set a speculative-decoding hint for the next turn.</td></tr></tbody></table>
+<p>Aliases: <code>/?</code> = <code>/help</code>, <code>/ctx</code> = <code>/context</code>, <code>/img</code> = <code>/image</code>, <code>/quit</code> = <code>/exit</code>.</p>
+<blockquote><p>Many of these have a GUI equivalent in the web/desktop app — the model picker chip (<code>/model</code>), the usage-chip popover (<code>/context</code>), the auto/plan chips, the 📎 attach button (<code>/image</code>, <code>/audio</code>), the speak toggle (<code>/speak</code>). See <a href="cli-parity.html" target="_blank" rel="noopener">cli-parity.md</a> for the full mapping.</p></blockquote>
+<h3>Built-ins in the web / desktop chat</h3>
+<p>The web chat understands a <strong>subset</strong> of the built-ins (the ones that make sense without a terminal), plus all your user/plugin commands:</p>
+<p><code>/help</code> · <code>/reset</code> · <code>/tools</code> · <code>/model [id]</code> · <code>/goal [text|clear]</code> · <code>/plan [task]</code> · <code>/auto [on|off]</code> · <code>/compact</code> · <code>/reload</code></p>
+<p>The remaining built-ins (<code>/context</code>, <code>/recent</code>, <code>/image</code>, <code>/effort</code>, <code>/fast</code>, <code>/json</code>, <code>/schema</code>, <code>/notools</code>, <code>/forcetool</code>, <code>/audio*</code>, <code>/speak</code>, <code>/predict</code>, <code>/exit</code>) are CLI-only — in the web/desktop app their job is done by GUI controls or per-turn API parameters instead.</p>
+<h2>User-defined commands</h2>
+<p>Drop a markdown file at <code>~/.evi/commands/&lt;name&gt;.md</code>; typing <code>/&lt;name&gt;</code> in the REPL <strong>or</strong> the web chat sends its expanded content as the next user message. This is modelled on Claude Code's custom commands (<code>evi/commands.py</code>).</p>
+<pre><code class="language-text">evi command list           # your + plugin commands (what /help shows in chat)
+evi command new &lt;name&gt;     # scaffold ~/.evi/commands/&lt;name&gt;.md (ns:name → subdir)</code></pre>
+<p>(REPL keybindings have the same treatment: <code>evi keybindings list</code> shows the effective bindings from <code>~/.evi/keybindings.toml</code>.)</p>
+<h3>File format</h3>
+<pre><code class="language-markdown">---
+description: Draft a conventional-commit message
+argument-hint: [scope]
+model: qwen2.5-coder:14b-instruct-q4_K_M
+---
+
+Write a conventional-commit message for the staged changes.
+Scope: $1
+Full request: $ARGUMENTS
+Here is the diff:
+@&lt;(git diff --cached)</code></pre>
+<ul><li><strong>Frontmatter</strong> (optional <code>---</code> block):<ul><li><code>description</code> — shown in <code>/help</code>. If omitted, the first body line is used.</li><li><code>argument-hint</code> — documents expected args (e.g. <code>[scope]</code>), shown to you.</li><li><code>model</code> — a per-command model override surfaced to callers that honour it.</li></ul></li><li><strong>Arguments</strong>:<ul><li><code>$ARGUMENTS</code> — everything after the command name.</li><li><code>$1</code> … <code>$9</code> — positional args (the argument string is <code>shlex</code>-split).</li><li><code>{args}</code> — legacy alias for <code>$ARGUMENTS</code>.</li></ul></li><li><strong>File references</strong> — <code>@path/to/file</code> inlines that file's contents (fenced), up to 16 KB, if the file exists; otherwise the token is left as-is. (Emails like <code>a@b.com</code> are <em>not</em> treated as file refs.)</li><li><strong>Namespacing</strong> — subdirectories become <code>:</code> names: <code>~/.evi/commands/git/commit.md</code> → <code>/git:commit</code>.</li></ul>
+<blockquote><p><strong>No shell execution.</strong> Unlike some tools, eVi does <strong>not</strong> run <code>!bash</code> blocks when expanding a command — auto-running shell on expansion is too sharp an edge for eVi's permission model. If you need triggering metadata or tool gating, write a <a href="features-skills.html" target="_blank" rel="noopener">skill</a> instead.</p></blockquote>
+<h3>Plugin commands</h3>
+<p>Installed plugins can ship a <code>commands/</code> directory; those appear as <code>/&lt;plugin&gt;:&lt;command&gt;</code> alongside your own. See <a href="features-plugins.html" target="_blank" rel="noopener">plugins.md</a>.</p>
+<h2>Usage</h2>
+<pre><code class="language-text">/help                     # list built-ins + user/plugin commands
+/model qwen2.5:7b         # switch model (persisted)
+/context                  # see the context-window breakdown
+/auto on                  # auto-approve tools for this session
+/commit fix(web)          # run ~/.evi/commands/commit.md with $1="fix(web)"
+/git:commit               # a namespaced command from commands/git/commit.md</code></pre>
+<p>Anything that isn't a built-in and isn't a known user/plugin command prints <code>unknown command: /&lt;name&gt; (try /help)</code>.</p>
+<h2>Examples</h2>
+<h3>Example 1 — install the bundled <code>/commit</code> command</h3>
+<p>The repo ships one example command:</p>
+<pre><code class="language-bash">mkdir -p ~/.evi/commands
+cp examples/commands/commit.md ~/.evi/commands/</code></pre>
+<p>Now <code>/commit</code> in any chat runs <code>git diff</code> and proposes a conventional-commit message. Pass a scope: <code>/commit web</code>.</p>
+<h3>Example 2 — a namespaced review command</h3>
+<pre><code class="language-bash">mkdir -p ~/.evi/commands/pr
+cat &gt; ~/.evi/commands/pr/describe.md &lt;&lt;'EOF'
+---
+description: Draft a PR description from the branch diff
+argument-hint: [ticket]
+---
+Write a concise PR description for ticket $1.
+Summarise the change, call out risks, and list manual test steps.
+Diff:
+@&lt;(git diff main...HEAD)
+EOF</code></pre>
+<p>Fire it with <code>/pr:describe ABC-123</code>.</p>
+<h2>Notes / limits</h2>
+<ul><li>Command and skill names must match <code>[A-Za-z0-9_-]+</code> per path segment (this also blocks path traversal).</li><li>The command store <strong>rescans on every call</strong>, so newly added files show up without restarting <code>evi web</code>.</li><li><code>/json</code> and <code>/schema</code> are per-turn structured-output controls — see <a href="features-structured-and-batch.html" target="_blank" rel="noopener">structured-and-batch.md</a>. The web/API equivalent is the <code>output_schema</code> field on the chat request.</li><li>Built-ins always win over a user command of the same name, so you can't shadow <code>/model</code> with <code>~/.evi/commands/model.md</code>.</li></ul>
+    </article>
+    <a class="doc-source" href="https://github.com/evi-assistant/evi-ai/blob/main/docs/features/slash-commands.md">Edit on GitHub ↗</a>
+  </main>
+  <footer class="doc-foot">
+    <a href="index.html">← All documentation</a>
+    <span>eVi — local-first personal AI assistant</span>
+  </footer>
+</body>
+</html>

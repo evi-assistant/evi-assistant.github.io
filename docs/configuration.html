@@ -1,0 +1,350 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Configuration — eVi docs</title>
+  <meta name="description" content="All eVi state lives under ~/.evi/ (Windows: %USERPROFILE%\.evi\). The primary file is config.toml. First launch writes a default. Hand-edit it when you need to change something; no… — eVi documentation." />
+  <link rel="stylesheet" href="../styles.css" />
+  <link rel="stylesheet" href="docs.css" />
+  <link rel="icon" href="../favicon.svg" type="image/svg+xml" />
+</head>
+<body>
+  <header class="nav">
+    <a class="brand" href="../index.html" aria-label="eVi home">
+      <span class="brand-mark">e<span class="brand-accent">Vi</span></span>
+    </a>
+    <nav class="nav-links">
+      <a href="index.html">Docs</a>
+      <a href="../index.html#install">Install</a>
+      <a href="../index.html#download">Download</a>
+      <a class="nav-gh" href="https://github.com/evi-assistant/evi-ai">GitHub ↗</a>
+    </nav>
+  </header>
+  <main class="doc-main">
+    <article class="doc">
+<h1>Configuration</h1>
+<p>All eVi state lives under <code>~/.evi/</code> (Windows: <code>%USERPROFILE%\.evi\</code>). The primary file is <code>config.toml</code>. First launch writes a default. Hand-edit it when you need to change something; nothing else holds machine-wide state.</p>
+<h2>Primary file — <code>config.toml</code></h2>
+<pre><code class="language-toml">[llm]
+backend         = "lmstudio"                  # lmstudio | ollama | llamacpp | openai_compat
+base_url        = "http://localhost:1234/v1"  # default per-backend; auto-bumped by `evi models backend`
+api_key         = "lm-studio"                 # local servers ignore it; `env:VARNAME` reads the env var
+model           = "qwen2.5-7b-instruct"       # current active model
+temperature     = 0.7                         # lower (0.3) is friendlier to tool calling
+max_tokens      = 4096
+request_timeout = 120.0
+
+[comfy]
+base_url           = "http://localhost:8188"
+default_checkpoint = "sd_xl_base_1.0.safetensors"
+default_steps      = 25
+default_width      = 1024
+default_height     = 1024
+
+[google]                                       # Phase 2 — deferred
+client_secrets_path = ""
+scopes              = ["https://www.googleapis.com/auth/gmail.readonly"]
+
+[microsoft]                                    # Phase 2 — deferred
+client_id = ""
+tenant_id = "common"
+scopes    = ["Mail.Read", "User.Read"]
+
+[tools]
+fs          = true     # read_file / write_file / list_dir
+code        = true     # run_python in a subprocess
+shell       = false    # not implemented; never default-on
+gmail       = false    # Phase 2
+outlook     = false    # Phase 2
+image       = false    # ComfyUI text2img
+memory      = true     # remember / recall / forget / list_memories
+subagent    = false    # delegate_explore / delegate_plan
+mcp         = false    # MCP-server-provided tools
+skills      = true     # list_skills / invoke_skill
+web         = false    # web_search / web_fetch (network!)
+voice       = false    # speak_text / transcribe_microphone
+computer    = false    # never default-on; mouse/keyboard control
+transcripts = true     # write session JSONL for dreaming
+
+[auto]
+# Categories listed here run without prompting. `computer` is never here.
+auto_approve = ["fs", "code", "memory", "skills", "image"]
+
+# Curated destructive-command guard (on by default). Commands like `rm -rf ~`,
+# `git reset --hard`, `git push --force`, disk formats, `curl | sh`, secret
+# exfil, or `terraform destroy` can never run SILENTLY: a match forces a
+# confirmation prompt, and is DENIED when there's no UI to confirm with
+# (headless / scheduler / MCP). Overrides yolo, accept_edits and auto_approve.
+block_destructive = true
+# fnmatch globs matched against the WHOLE command that exempt it from the guard.
+destructive_allow = ["*--force-with-lease*"]
+# Builtin rule ids to silence without disabling the guard (see evi/shell_guard.py).
+destructive_disable_rules = ["git-commit-amend"]</code></pre>
+<p>Everyday commands are deliberately <em>not</em> flagged — <code>rm -rf ./build</code>, <code>rm -rf node_modules</code>, <code>git reset --soft</code>, <code>git branch -d</code>, <code>chmod 644</code>, <code>terraform plan</code>, <code>apt remove &lt;app&gt;</code> all run as normal. Only genuinely destructive, hard-to-reverse forms match. An explicit, <em>specific</em> allow rule (one carrying an arg-glob, e.g. <code>allow shell *--force*</code>) is honoured as intent and clears the guard; a broad <code>allow shell</code> / <code>allow shell *</code> does not.</p>
+<h3><code>evi config show</code> prints the resolved config (with profile overlay).</h3>
+<h3><code>evi config path</code> prints the file path.</h3>
+<h3>Online providers — <code>evi models preset</code></h3>
+<p>eVi is local-first, but any OpenAI-compatible cloud gateway works via <code>backend = "openai_compat"</code>. Named presets make the common ones one command:</p>
+<pre><code class="language-bash">evi models preset                         # list providers + whether each key env var is set
+evi models preset openrouter -m anthropic/claude-3.5-sonnet
+evi models preset openai                  # uses $OPENAI_API_KEY (api=chat; set api=responses for the Responses API)</code></pre>
+<p>Presets (<code>openrouter</code>, <code>openai</code>, <code>xai</code>, <code>anthropic</code>, <code>groq</code>, <code>together</code>) all set <code>backend=openai_compat</code> + the provider <code>base_url</code> and, by default, an <code>api_key = "env:&lt;PROVIDER&gt;_API_KEY"</code> reference so your key stays in the environment, not in <code>config.toml</code>. (Pass <code>--api-key</code> to store it inline instead.) The <strong>anthropic</strong> preset targets Anthropic's OpenAI-compatible endpoint, not the native Messages API.</p>
+<h3>Claude via your Max/Pro plan — <code>backend = "claude_agent"</code> (no API key)</h3>
+<p>The <code>claude_agent</code> backend talks to Claude through the local <strong><code>claude</code> CLI</strong> (the Claude Agent SDK), authenticating with your Claude <strong>subscription login</strong> instead of an <code>ANTHROPIC_API_KEY</code> — the sanctioned, no-key way to use your Max/Pro plan from your own tools.</p>
+<p>Setup (one time):</p>
+<pre><code class="language-bash">npm i -g @anthropic-ai/claude-code   # the `claude` CLI, if not already installed
+claude                                # log in on your Max/Pro plan
+pip install 'evi-assistant[claude-agent]'</code></pre>
+<p>Then add + select it (no URL, no key):</p>
+<pre><code class="language-bash">evi backend add claude --kind claude_agent   # or: Settings → Model &amp; Backend → add, kind claude_agent
+evi backend use claude --model opus           # models are aliases: opus | sonnet | haiku</code></pre>
+<p>The <code>opus</code> / <code>sonnet</code> / <code>haiku</code> aliases resolve to whatever your plan currently serves. <strong>Tools work fully</strong> — eVi still runs its own tools (with its permissions, checkpoints, and mode-scoped toolsets); the Agent SDK is used only to decide <em>which</em> tool to call. Note this routes through the <code>claude</code> CLI (not an HTTP endpoint), so it's local-machine-only and needs the CLI logged in; if the SDK/CLI is missing, eVi says so the moment you select the backend.</p>
+<h3>OpenAI Codex via your ChatGPT plan — <code>backend = "codex"</code> (no API key)</h3>
+<p>The <code>codex</code> backend is the OpenAI counterpart: it talks to the local <strong><code>codex</code> CLI</strong> authenticated by <code>codex login</code> (ChatGPT <strong>Plus/Pro/Business</strong>), no <code>OPENAI_API_KEY</code>.</p>
+<pre><code class="language-bash">npm i -g @openai/codex   # the `codex` CLI (or: brew install --cask codex)
+codex login              # browser OAuth against your ChatGPT plan
+evi backend add codex --kind codex     # or Settings → Model &amp; Backend → kind codex
+evi backend use codex --model gpt-5-codex   # models: gpt-5-codex | gpt-5</code></pre>
+<p>Under the hood eVi runs <code>codex exec --json</code> (read-only) and streams the answer. <strong>Difference from <code>claude_agent</code>:</strong> Codex is an <em>autonomous</em> agent that runs its <strong>own</strong> tools in its sandbox, so it's a <strong>chat / delegate</strong> provider — eVi's tools don't route through it, and it can't edit files during a chat turn. Both backends are built on the same shared CLI-agent shim (<code>evi/llm/cli_agent.py</code>), so they behave consistently and adding further subscription-login CLIs is cheap.</p>
+<h3>Google Gemini via the free login — <code>backend = "gemini"</code> (no API key)</h3>
+<p>The <code>gemini</code> backend uses the local <strong><code>gemini</code> CLI</strong>: signing in with a Google account gives a <strong>free tier (~1000 requests/day)</strong> with no <code>GEMINI_API_KEY</code>.</p>
+<pre><code class="language-bash">npm i -g @google/gemini-cli   # the `gemini` CLI
+gemini                        # run once and pick a Google login
+evi backend add gemini --kind gemini        # or Settings → Model &amp; Backend → kind gemini
+evi backend use gemini --model gemini-2.5-flash   # models: gemini-2.5-pro | gemini-2.5-flash</code></pre>
+<p>eVi runs <code>gemini -p … -o json</code> and streams the reply. Like <code>codex</code> it's a <strong>chat / delegate</strong> provider (Gemini drives its own tools; eVi's tools don't route through it), built on the same shared shim.</p>
+<h3>Sourcegraph Amp via your subscription — <code>backend = "amp"</code> (no API key)</h3>
+<p>The <code>amp</code> backend uses the local <strong><code>amp</code> CLI</strong>, authenticated by <code>amp login</code> (an Amp subscription / credit balance) or an <code>AMP_API_KEY</code> access token — not a per-token model API key.</p>
+<pre><code class="language-bash">npm i -g @sourcegraph/amp   # the `amp` CLI
+amp login                   # Amp subscription (or: set AMP_API_KEY)
+evi backend add amp --kind amp             # or Settings → Model &amp; Backend → kind amp
+evi backend use amp --model medium         # modes: medium | low | high</code></pre>
+<p>eVi runs <code>amp -x --stream-json</code> and streams the reply. Amp selects its model by <strong>agent mode</strong> (<code>low</code>/<code>medium</code>/<code>high</code>), not a model id. Like <code>codex</code>/<code>gemini</code> it's a <strong>chat / delegate</strong> provider, but note Amp is autonomous and <em>can</em> use tools (including file edits) per your configured <code>amp permissions</code> — restrict it there if you want a read-only chat. eVi <strong>won't start Amp unauthenticated</strong> (its login flow would block), and it bounds each turn with a timeout as a backstop.</p>
+<h3>Qwen Code via the free Qwen login — <code>backend = "qwen"</code> (no API key)</h3>
+<p>The <code>qwen</code> backend uses <strong>Qwen Code</strong> (Alibaba's gemini-cli fork): sign in free with a qwen.ai account (a generous free tier, ~2000 requests/day) — no API key.</p>
+<pre><code class="language-bash">npm i -g @qwen-code/qwen-code   # the `qwen` CLI
+qwen                            # run once and pick 'Qwen' to sign in (free OAuth)
+evi backend add qwen --kind qwen            # or Settings → Model &amp; Backend → kind qwen
+evi backend use qwen --model qwen3-coder-plus   # models: qwen3-coder-plus | qwen3-coder-flash</code></pre>
+<p>eVi runs <code>qwen -p … -o json</code> (Claude-Code-style events) and streams the reply — a <strong>chat / delegate</strong> provider like <code>gemini</code>, on the same shared shim.</p>
+<h3>GitHub Copilot via your subscription — <code>backend = "copilot"</code> (no API key)</h3>
+<p>The <code>copilot</code> backend uses the local <strong><code>copilot</code> CLI</strong> (<code>@github/copilot</code>), authenticated by your GitHub <strong>Copilot subscription</strong> (<code>copilot login</code>) — no separate model API key.</p>
+<pre><code class="language-bash">npm i -g @github/copilot   # the `copilot` CLI
+copilot login              # GitHub Copilot subscription
+evi backend add copilot --kind copilot          # or Settings → Model &amp; Backend → kind copilot
+evi backend use copilot --model auto            # models: auto | claude-sonnet-4.5 | gpt-5</code></pre>
+<p>eVi runs <code>copilot -p … --output-format text -s</code> and streams the reply. <code>--model auto</code> lets Copilot pick; the exact set depends on your plan. A <strong>chat / delegate</strong> provider; unapproved tool calls are auto-denied in non-interactive mode, so a chat turn stays answer-only.</p>
+<h3>The CLI-agent backends at a glance</h3>
+<table><thead><tr><th>kind</th><th>CLI</th><th>Auth (no API key)</th><th>Tools</th></tr></thead><tbody><tr><td><code>claude_agent</code></td><td><code>claude</code></td><td>Claude <strong>Max/Pro</strong> login</td><td><strong>eVi drives tools</strong> (full parity)</td></tr><tr><td><code>codex</code></td><td><code>codex</code></td><td>ChatGPT <strong>Plus/Pro</strong> login</td><td>delegate (Codex's own, read-only)</td></tr><tr><td><code>gemini</code></td><td><code>gemini</code></td><td>Google <strong>free</strong> login</td><td>delegate (Gemini's own)</td></tr><tr><td><code>amp</code></td><td><code>amp</code></td><td>Amp <strong>subscription</strong> (<code>amp login</code> / <code>AMP_API_KEY</code>)</td><td>delegate (Amp's own, per <code>amp permissions</code>)</td></tr><tr><td><code>qwen</code></td><td><code>qwen</code></td><td>Qwen <strong>free</strong> OAuth login</td><td>delegate (Qwen's own)</td></tr><tr><td><code>copilot</code></td><td><code>copilot</code></td><td>GitHub <strong>Copilot</strong> login</td><td>delegate (Copilot's own, auto-denied)</td></tr></tbody></table>
+<p>All six are local-machine-only (they shell out to a CLI, so they don't work in the packaged desktop sidecar) and report clearly if their CLI isn't installed.</p>
+<h2>Profiles — <code>~/.evi/profiles/&lt;name&gt;.toml</code></h2>
+<p>Partial overlay merged on top of <code>config.toml</code>. Activated by env var <code>EVI_PROFILE=&lt;name&gt;</code> or <code>--profile &lt;name&gt;</code> / <code>-p &lt;name&gt;</code> on any CLI invocation.</p>
+<pre><code class="language-toml"># ~/.evi/profiles/home.toml
+[llm]
+backend  = "openai_compat"
+base_url = "http://ai-server.local:8000/v1"
+model    = "qwen2.5:32b"</code></pre>
+<pre><code class="language-bash">evi profile add away --backend lmstudio --model llama3.2:1b-instruct-q4_K_M
+evi profile list
+evi --profile home chat</code></pre>
+<p>Profile merge is <strong>deep</strong> for tables (dicts) and <strong>replacing</strong> for lists. So a profile that overrides <code>[microsoft] scopes</code> replaces it wholesale rather than appending.</p>
+<h2>Memory — <code>~/.evi/memory/</code></h2>
+<p>One markdown file per fact:</p>
+<pre><code>~/.evi/memory/
+  INDEX.md             auto-regenerated; you can read but don't edit
+  preferences.md       arbitrary name; first non-empty line becomes the summary
+  project_paths.md
+  .attic/              soft-deleted entries; safe to remove if you want</code></pre>
+<p>The <code>Agent.memory.format_for_prompt()</code> block shows up in every system prompt. The model uses the <code>remember(name, content)</code>, <code>recall(name)</code>, and <code>forget(name)</code> tools to manage it. <strong><code>forget</code> is soft-delete</strong> — it moves to <code>.attic/</code>. The dreaming engine relies on this to avoid losing data on bad consolidations.</p>
+<p>Caps: 64 KB per entry, names must match <code>[A-Za-z0-9_-]{1,64}</code>.</p>
+<h2>Skills — <code>~/.evi/skills/&lt;name&gt;/SKILL.md</code></h2>
+<pre><code>~/.evi/skills/
+  summarize/
+    SKILL.md          required — instructions + optional YAML frontmatter
+    example-input.txt  optional assets (loadable by the model with read_file)</code></pre>
+<pre><code class="language-markdown">---
+name: summarize
+description: Boil long text down to 3 bullets.
+---
+
+# Steps
+1. Identify the topic.
+2. Pull the three highest-impact points.
+3. Format as Markdown bullets ≤ 12 words each.</code></pre>
+<p>The frontmatter <code>description</code> shows up in the system prompt's <code>## Available skills</code> block. The model calls <code>invoke_skill(name)</code> to load the full body when it decides the skill applies.</p>
+<h2>Slash commands — <code>~/.evi/commands/&lt;name&gt;.md</code></h2>
+<p>User-defined prompt templates. Type <code>/&lt;name&gt; args</code> in the chat REPL or web UI and the file's body is sent as the user turn with <code>{args}</code> substituted.</p>
+<pre><code class="language-markdown"># ~/.evi/commands/commit.md
+Run `git diff` to see what changed, then propose a conventional-commits
+style message under 70 chars. Args: {args}</code></pre>
+<p>Built-in slash commands (handled in code, not files): <code>/help /reset /exit /tools /model /goal /plan /auto</code>.</p>
+<h2>Hooks — <code>~/.evi/hooks.toml</code></h2>
+<pre><code class="language-toml">[[before_tool_call]]
+name             = "audit"
+match            = "*"                  # glob over tool names (fs.*, write_file, etc.)
+command          = ["bash", "-c", "echo $EVI_HOOK_TOOL &gt;&gt; ~/.evi/logs/tools.log"]
+timeout          = 5
+
+[[before_tool_call]]
+name             = "no-system-writes"
+match            = "write_file"
+command          = ["bash", "-c", 'echo "$EVI_HOOK_ARGS_JSON" | grep -qv "/etc/"']
+veto_on_nonzero  = true                 # non-zero exit blocks the tool
+
+[[after_tool_call]]
+name    = "notify"
+match   = "generate_image"
+command = ["notify-send", "Image ready"]
+
+[[after_tool_call]]
+name    = "webhook"
+match   = "*"
+url     = "https://example.com/evi-hook"   # POST instead of spawning a command</code></pre>
+<p>Env vars set in the child process (command hooks):</p>
+<ul><li><code>EVI_HOOK_EVENT</code> — <code>before_tool_call</code> or <code>after_tool_call</code></li><li><code>EVI_HOOK_TOOL</code> — fully-qualified tool name</li><li><code>EVI_HOOK_ARGS_JSON</code> — JSON of the call arguments</li><li><code>EVI_HOOK_RESULT</code> — tool output (after-hooks only, capped at 4 KB)</li></ul>
+<p>A hook uses either <code>command</code> (argv, spawned) <strong>or</strong> <code>url</code> (HTTP POST of <code>{event, tool, args_json, result}</code>). For a url hook a 2xx response means success; any other status becomes the exit code, so <code>veto_on_nonzero</code> still gates the call.</p>
+<p>Besides the tool events, hooks fire on <strong>lifecycle events</strong> (use <code>match = "*"</code>):</p>
+<pre><code class="language-toml">[[user_prompt_submit]]   # before each turn — veto blocks the prompt
+name = "no-secrets"
+command = ["python3", "/path/check_prompt.py"]   # prompt is in EVI_HOOK_ARGS_JSON
+veto_on_nonzero = true
+
+[[before_compact]]       # before history compaction — veto keeps it intact
+[[stop]]                 # after a turn completes (notification; never blocks)</code></pre>
+<h2>Keybindings — <code>~/.evi/keybindings.toml</code></h2>
+<p>Map a key to a slash command in the interactive chat REPL — pressing it replaces the line with that command and submits it.</p>
+<pre><code class="language-toml">[keybindings]
+"c-t"      = "/tools"      # Ctrl-T
+"f2"       = "/model"      # F2
+"escape g" = "/goal"       # Esc then g (a two-key sequence)</code></pre>
+<p>Keys use prompt_toolkit names (<code>c-t</code>, <code>f2</code>, <code>escape</code>, …); a space-separated value is a multi-key sequence. Terminal essentials (<code>c-c</code>, <code>c-d</code>, <code>tab</code>, <code>enter</code>) are reserved and silently ignored, and an unknown key name is skipped without breaking the others.</p>
+<h2>Voice / TTS — <code>[voice]</code> in <code>config.toml</code></h2>
+<pre><code class="language-toml">[voice]
+engine       = "system"   # system | coqui | f5 | piper
+model        = ""         # engine-specific: Coqui XTTS id, or a Piper voice .onnx path
+clone_sample = ""         # reference WAV for the cloning engines (coqui / f5)
+language     = "en"</code></pre>
+<ul><li><strong>system</strong> — zero-dep platform voice (Windows SAPI / macOS <code>say</code> / espeak).</li><li><strong>coqui</strong> — Coqui XTTS v2; multilingual, clones a voice from <code>clone_sample</code>.</li><li><strong>f5</strong> — F5-TTS; fast zero-shot cloning (uses its <code>f5-tts_infer-cli</code>).</li><li><strong>piper</strong> — lightweight local neural voices (set <code>model</code> to a <code>.onnx</code>); no cloning.</li></ul>
+<p>The neural engines are optional heavyweight installs; eVi lazy-imports them and falls back to a clear error if the deps/binaries aren't present. <code>evi voice engines</code> shows which are installed and which is active; switch the engine in the desktop <strong>Settings → Voice</strong> screen or by editing <code>[voice]</code>.</p>
+<h2>Workflows — <code>~/.evi/workflows/&lt;name&gt;.toml</code></h2>
+<p>Where a recipe is a sequence of turns through one conversation, a <strong>workflow</strong> orchestrates independent steps — each its own headless agent — with parallel fan-out and variable interpolation.</p>
+<pre><code class="language-toml">name = "research"
+description = "Plan, research two angles in parallel, then synthesize."
+
+[vars]
+topic = "local-first AI"
+
+[[steps]]
+id = "plan"
+prompt = "Outline an approach to research {topic}."
+
+[[steps]]
+id = "pros"
+parallel = true
+prompt = "List the upsides of {topic} given this plan:\n{plan}"
+
+[[steps]]
+id = "cons"
+parallel = true
+prompt = "List the downsides of {topic} given this plan:\n{plan}"
+
+[[steps]]
+id = "synth"
+prompt = "Synthesize a balanced take.\nUpsides:\n{pros}\nDownsides:\n{cons}"</code></pre>
+<ul><li>Steps run in file order; a contiguous run of <code>parallel = true</code> steps runs concurrently. A following sequential step is the natural fan-in point.</li><li>Prompts interpolate workflow <code>[vars]</code> and earlier step outputs by id — <code>{topic}</code>, <code>{plan}</code>, … (escape literal braces as <code>{{</code> / <code>}}</code>).</li><li>Each step is an unattended (auto-approved) headless agent; set <code>mode</code> on a step for a tool preset (<code>chat</code>/<code>cowork</code>/<code>code</code>).</li></ul>
+<p><code>evi workflow new &lt;name&gt;</code> scaffolds one; <code>evi workflow run &lt;name&gt; --var topic=…</code> runs it (<code>--json</code> for machine output). The desktop <strong>🗂 Dispatch</strong> panel lists and launches workflows and shows every live session.</p>
+<h2>Plugins — <code>~/.evi/plugins/&lt;name&gt;/</code> + marketplace</h2>
+<p>A plugin bundles any of: <code>commands/</code>, <code>skills/</code>, <code>hooks.toml</code>, <code>mcp.json</code>, and <code>agents.toml</code> (subagent profiles, used via the <code>delegate</code> tool — see <code>evi agents</code>). Install from a directory or git URL with <code>evi plugin add</code>, or by name from the marketplace index:</p>
+<pre><code class="language-json">// ~/.evi/marketplace.json
+{
+  "plugins": [
+    { "name": "git-helpers",
+      "source": "https://github.com/you/evi-git-helpers.git",
+      "description": "Handy git slash commands",
+      "tags": ["git"] }
+  ]
+}</code></pre>
+<pre><code class="language-toml"># config.toml — extra remote index files merged with the local one
+[plugins]
+index_urls = ["https://example.com/evi-plugins.json"]</code></pre>
+<p><code>evi plugin search [query]</code> lists matches; <code>evi plugin install &lt;name&gt;</code> resolves the name through the index and installs its <code>source</code>. <code>evi plugin index init</code> / <code>evi plugin index add &lt;name&gt; &lt;source&gt;</code> manage the local index.</p>
+<h2>Federation — <code>~/.evi/peers.json</code></h2>
+<p>Delegate a task to a trusted peer eVi (e.g. a GPU box):</p>
+<pre><code class="language-json">[ { "name": "gpu", "url": "http://gpu-box:8473", "token": "&lt;peer web token&gt;" } ]</code></pre>
+<p><code>evi peer run gpu "summarise this repo"</code> (or the <code>delegate_peer</code> tool, category <code>federation</code>, off by default) POSTs to the peer's <code>/api/federate</code>. The peer must opt in with <code>[federation] serve = true</code>; it runs the task non-interactively (tools not auto-approved are denied).</p>
+<h3>A2A (Agent2Agent) — interop with any agent</h3>
+<p>Federation is eVi's <strong>private fast path</strong> to your <em>own</em> eVis. <strong>A2A</strong> (<a href="https://a2a-protocol.org" target="_blank" rel="noopener">a2a-protocol.org</a>, a Linux Foundation standard) is the <strong>interop path</strong> — it lets eVi talk to <em>any</em> vendor's agent that speaks A2A, and lets such agents call eVi. No extra dependency (hand-rolled against the v0.3/v1.0 wire shapes).</p>
+<p><strong>Discovery — always on, public.</strong> eVi serves a spec-compliant <strong>Agent Card</strong> at <code>GET /.well-known/agent-card.json</code> (auth-exempt). It carries the standard fields (<code>protocolVersion</code>, <code>capabilities</code>, <code>skills</code>, <code>securitySchemes</code>) plus eVi's model capability flags under an <code>x-evi</code> extension, so capability-aware clients can route by modality.</p>
+<p><strong>Serve — opt in.</strong> Set <code>a2a = true</code> under <code>[federation]</code> to expose the JSON-RPC endpoint <code>POST /a2a</code>:</p>
+<pre><code class="language-toml">[federation]
+a2a = true      # expose POST /a2a (off by default)</code></pre>
+<p>It implements <code>message/send</code>, <code>tasks/get</code>, and <code>tasks/cancel</code>, is <strong>bearer-token gated</strong> (same web token as the rest of the API), and runs each delegated task <strong>non-interactively</strong> — tools not already auto-approved are denied, exactly like <code>/api/federate</code>. Streaming (<code>message/stream</code>) and push notifications aren't implemented yet, so the card advertises <code>capabilities.streaming = false</code> and a compliant client falls back to blocking <code>message/send</code>.</p>
+<p><strong>Call out — the <code>delegate_a2a</code> tool.</strong> eVi can delegate to any external A2A agent by its JSON-RPC URL:</p>
+<pre><code>delegate_a2a(url="https://some-agent.example/a2a", task="research X", token="…")</code></pre>
+<p>(category <code>federation</code>, off by default — enable the tool to let the model use it).</p>
+<h2>Multi-user web — <code>~/.evi/users.json</code></h2>
+<p>Opt-in (<code>[web] multi_user = true</code>): each person logs in with their own revocable token instead of sharing <code>auth_token</code>.</p>
+<pre><code class="language-json">[ { "name": "alice", "token": "…" }, { "name": "bob", "token": "…" } ]</code></pre>
+<p>Manage with <code>evi web-config users add/list/remove</code>. Each user gets an <strong>isolated workspace</strong> — their web sessions, transcripts, and memory live under <code>~/.evi/users/&lt;name&gt;/</code> and aren't visible to other users. Drop a user from the file to revoke access. (Skills/plugins/config stay shared — they're capabilities, not personal data.)</p>
+<h2>Guardrails — <code>~/.evi/guardrails.toml</code></h2>
+<p>A local content filter over the model. Off by default; <code>enabled = true</code> to turn it on. Two rule types layer together:</p>
+<pre><code class="language-toml">enabled = true
+
+[[rule]]                      # regex — fast, deterministic
+name = "block-secrets"
+pattern = "(?i)(api[_-]?key|secret)\\s*[:=]"
+action = "block"             # block | redact
+applies_to = "input"         # input | output | both
+
+[[judge]]                     # semantic — graded by the LLM
+name = "no-self-harm"
+policy = "Requests for, or content encouraging, self-harm or suicide."
+applies_to = "both"
+
+[[classifier]]                # offline ML moderation model
+name = "toxicity"
+model = "unitary/toxic-bert"  # any HF text-classification model ("" = default)
+labels = ["toxic", "threat", "insult"]   # labels that block ([] = any)
+threshold = 0.7
+applies_to = "both"</code></pre>
+<p>Three layers run in order, stopping at the first block:</p>
+<ul><li><strong><code>[[rule]]</code> regex</strong> — fast, deterministic: <code>block</code> refuses the turn (input) or scrubs the stored reply (output); <code>redact</code> replaces spans with <code>[REDACTED]</code>.</li><li><strong><code>[[judge]]</code></strong> — eVi's own model classifies the text against <code>policy</code> and blocks on a match. The local counterpart to a hosted moderation API; one model round-trip per turn.</li><li><strong><code>[[classifier]]</code></strong> — a local HuggingFace text-classification model scores the text and blocks when a <code>labels</code> score crosses <code>threshold</code>. Fully offline; needs <code>pip install 'evi-assistant[moderation]'</code> (transformers + torch). Block-only.</li></ul>
+<p>Both semantic layers <strong>fail open</strong> (a missing/flaky model skips the rule, not the turn). Inspect with <code>evi guardrails list</code>; <code>evi guardrails test "&lt;text&gt;"</code> dry-runs the regex layer.</p>
+<p>Inspect with <code>evi guardrails list</code>; dry-run the regex layer with <code>evi guardrails test "&lt;text&gt;"</code>.</p>
+<h2>Deep links — <code>evi://</code></h2>
+<p>The desktop app registers the <code>evi://</code> URL scheme. <code>evi://session/&lt;id&gt;</code> focuses a session, <code>evi://workflow/&lt;name&gt;</code> opens the dispatch panel, <code>evi://new</code> starts a chat. <code>evi link [id|new]</code> prints a link; <code>evi link --open &lt;url&gt;</code> shows where it routes. The same targets work in a browser via <code>/?session=</code> and <code>/?workflow=</code>.</p>
+<h2>MCP — <code>~/.evi/mcp.json</code></h2>
+<pre><code class="language-json">[
+  {
+    "name": "filesystem",
+    "command": "npx",
+    "args": ["-y", "@modelcontextprotocol/server-filesystem", "C:/Users"],
+    "env": {},
+    "enabled": true
+  },
+  {
+    "name": "git",
+    "command": "uvx",
+    "args": ["mcp-server-git", "--repository", "C:/evi"]
+  }
+]</code></pre>
+<p>Flip <code>tools.mcp = true</code> in <code>config.toml</code>. <code>evi mcp list-tools</code> enumerates what each server exposes; tools land in the registry as <code>&lt;server-name&gt;.&lt;tool-name&gt;</code>.</p>
+<h2>Scheduled tasks — <code>~/.evi/scheduled/&lt;id&gt;.json</code></h2>
+<p>Managed via <code>evi schedule add/list/remove/enable/disable/run-now</code>. One file per task. Don't hand-edit unless you know the schema; the IDs are opaque and the scheduler caches state.</p>
+<pre><code class="language-bash">evi schedule add --name "morning brief" --cron "0 8 * * *" \
+                 --prompt "Summarize my overnight email."
+evi scheduler          # foreground daemon, or just run `evi web`</code></pre>
+<h2>Where things write logs</h2>
+<table><thead><tr><th>What</th><th>Where</th></tr></thead><tbody><tr><td>Dream audit</td><td><code>~/.evi/logs/dreams/&lt;stamp&gt;.log</code></td></tr><tr><td>Scheduled task runs</td><td><code>~/.evi/logs/scheduled/&lt;id&gt;_&lt;stamp&gt;.log</code></td></tr><tr><td>User-defined hooks</td><td>Wherever your hook commands write</td></tr><tr><td>Session transcripts</td><td><code>~/.evi/transcripts/&lt;YYYY-MM-DD&gt;/&lt;session&gt;.jsonl</code></td></tr><tr><td>ComfyUI images</td><td><code>~/.evi/images/</code></td></tr><tr><td>Screenshots</td><td><code>~/.evi/screenshots/</code></td></tr><tr><td>HF model downloads</td><td><code>~/.evi/models/&lt;repo-flat&gt;/</code></td></tr></tbody></table>
+<h2>Environment variables</h2>
+<table><thead><tr><th>Var</th><th>Purpose</th></tr></thead><tbody><tr><td><code>EVI_HOME</code></td><td>Override <code>~/.evi/</code> location entirely</td></tr><tr><td><code>EVI_PROFILE</code></td><td>Active profile name (same as <code>--profile</code>)</td></tr><tr><td><code>EVI_PYTHON</code></td><td>Tauri desktop: Python interpreter to spawn (default <code>py -3.13</code>)</td></tr><tr><td><code>EVI_REPO_ROOT</code></td><td>Tauri desktop: pin the repo root rather than auto-detecting</td></tr><tr><td><code>EVI_REMOTE_URL</code></td><td>Tauri desktop: thin-client mode — skip spawn, navigate to URL</td></tr></tbody></table>
+    </article>
+    <a class="doc-source" href="https://github.com/evi-assistant/evi-ai/blob/main/docs/configuration.md">Edit on GitHub ↗</a>
+  </main>
+  <footer class="doc-foot">
+    <a href="index.html">← All documentation</a>
+    <span>eVi — local-first personal AI assistant</span>
+  </footer>
+</body>
+</html>

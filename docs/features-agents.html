@@ -1,0 +1,200 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Agents &amp; Orchestration — eVi docs</title>
+  <meta name="description" content="eVi is single-user and local-first, but a single linear chat is not always the best shape for a task. Agents &amp; Orchestration is the family of features that let one eVi run *other*… — eVi documentation." />
+  <link rel="stylesheet" href="../styles.css" />
+  <link rel="stylesheet" href="docs.css" />
+  <link rel="icon" href="../favicon.svg" type="image/svg+xml" />
+</head>
+<body>
+  <header class="nav">
+    <a class="brand" href="../index.html" aria-label="eVi home">
+      <span class="brand-mark">e<span class="brand-accent">Vi</span></span>
+    </a>
+    <nav class="nav-links">
+      <a href="index.html">Docs</a>
+      <a href="../index.html#install">Install</a>
+      <a href="../index.html#download">Download</a>
+      <a class="nav-gh" href="https://github.com/evi-assistant/evi-ai">GitHub ↗</a>
+    </nav>
+  </header>
+  <main class="doc-main">
+    <article class="doc">
+<h1>Agents &amp; Orchestration</h1>
+<h2>Overview</h2>
+<p>eVi is single-user and local-first, but a single linear chat is not always the best shape for a task. <strong>Agents &amp; Orchestration</strong> is the family of features that let one eVi run <em>other</em> scoped agents — and even borrow a second machine — to break work into focused pieces:</p>
+<ul><li><strong>Subagents</strong> — hand a narrow task (e.g. "where is X defined", "draft an implementation plan") to a throwaway agent with its own fresh context and a restricted tool set. Its report comes back as a tool result, so your main conversation stays small and on-topic.</li><li><strong>Parallel research</strong> — fan several independent sub-questions out to read-only Explore subagents at once, then synthesize their findings.</li><li><strong>Workflows</strong> — author a multi-step, optionally-parallel pipeline in TOML where each step is its own headless agent and later steps interpolate earlier steps' output.</li><li><strong>Federation</strong> — delegate a self-contained task to a <em>trusted peer eVi</em> (e.g. your GPU box) over plain HTTP, so a small local model can offload heavy work to a bigger remote one without any shared cloud.</li></ul>
+<p>Why use it: keep the main context clean, parallelise tool-heavy investigation, script repeatable multi-stage jobs, and scale across your own machines — all while staying local and privacy-first.</p>
+<h2>How it works</h2>
+<h3>Subagents</h3>
+<p>A subagent is the <strong>same <code>Agent</code> class</strong> as the main loop, constructed with a focused system prompt and a restricted tool list. The runner (<code>evi/llm/subagent.py</code>) reuses the parent's LLM client and config, builds the agent, runs it to completion (default <code>max_turns=6</code>), and returns the concatenated final assistant text. A short <code>[trace]</code> of tool calls (each tool name + a 200-char preview) is appended so you can see what it did. If the subagent errors, you get <code>ERROR: subagent failed: …</code> instead.</p>
+<p>Tool scoping is by <strong>category</strong>, not per-tool toggle. A subagent profile lists the tool <em>categories</em> it may use, and the runner pulls every registered tool in those categories — so an Explore subagent gets read-only <code>fs</code> tools even if the global <code>fs</code> toggle is otherwise managed elsewhere.</p>
+<p>Built-in profiles (<code>SUBAGENT_PROFILES</code>):</p>
+<table><thead><tr><th>Profile</th><th>Tool categories</th><th>Purpose</th></tr></thead><tbody><tr><td><code>explore</code></td><td><code>fs</code></td><td>Read-only investigation; ends with a bulleted summary.</td></tr><tr><td><code>plan</code></td><td><em>(none)</em></td><td>Produces a numbered implementation plan; calls no tools.</td></tr></tbody></table>
+<p>These are exposed as tools (category <code>subagent</code>):</p>
+<ul><li><code>delegate(profile, task)</code> — run any named profile (built-in or plugin).</li><li><code>delegate_explore(task)</code> — shortcut for the <code>explore</code> profile.</li><li><code>delegate_plan(task)</code> — shortcut for the <code>plan</code> profile.</li><li><code>parallel_research(tasks)</code> — run up to <strong>6</strong> Explore subagents concurrently and return a combined "Parallel research findings" report (you synthesize it).</li></ul>
+<blockquote><p>Note on concurrency: parallel subagents overlap orchestration and tool calls, but a single local backend serialises the actual model inference (one model, one GPU). The big wins are on tool-heavy work or a remote / multi-GPU backend.</p></blockquote>
+<h3>Custom profiles</h3>
+<p>Define your own subagent profiles without editing JSON by hand:</p>
+<pre><code class="language-bash">evi agents new security --prompt "You are a security reviewer." --tools fs,code
+evi agents                # lists built-in + user + plugin profiles</code></pre>
+<p>This writes <code>~/.evi/agents.toml</code> (same <code>[[agent]]</code> schema as below) and the profile is then usable by bare name via <code>delegate(profile="security", task=…)</code>. Re-run with <code>--force</code> to overwrite; built-in names (<code>explore</code>, <code>plan</code>) are reserved.</p>
+<h3>Plugin profiles</h3>
+<p>Installed plugins can add subagent profiles via a <code>&lt;plugin&gt;/agents.toml</code>. Each profile is namespaced <code>&lt;plugin&gt;:&lt;name&gt;</code> so it can never shadow a built-in. The same file format works for the user-level <code>~/.evi/agents.toml</code> (referenced by bare name). Malformed files or entries are silently skipped (plugin scanning never breaks core subagents):</p>
+<pre><code class="language-toml">[[agent]]
+name = "security"
+system_prompt = "You are a security reviewer…"
+tools = ["fs"]            # tool *categories* the subagent may use</code></pre>
+<h3>Agent teams</h3>
+<p>Agent teams (<code>evi/teams.py</code>) are a <strong>dynamic, claimable</strong> task list — distinct from workflows (a declarative DAG you author) and ultracode (a fixed pipeline). A <strong>lead</strong> decomposes a goal into tasks with <code>blocked_by</code> dependencies, persisted to a shared file (<code>~/.evi/team.json</code>); <strong>teammates</strong> (subagents) then claim ready tasks, run them, and record results, draining the list in dependency order with bounded parallelism. Claims are thread-safe (no double-claim) and the store is persisted, so the team's progress is inspectable and survives a restart.</p>
+<pre><code class="language-bash">evi team new "add OpenAPI docs to the HTTP API"   # lead decomposes -&gt; task list
+evi team list                                      # see tasks + status + deps
+evi team run --workers 3                            # teammates drain it in dep order
+evi team add "write the integration test" --blocked-by t2   # hand-add a task
+evi team clear</code></pre>
+<p>A task whose dependency <strong>fails</strong> is reported (its dependents stay pending rather than hanging the run). The core is model-free — <code>TeamStore</code> + <code>drain_team(store, run_one)</code> (injected runner, like ultracode) — and re-exported from <code>evi.sdk</code>.</p>
+<p><strong>Distributed teammates (<code>evi team run --peers</code>).</strong> Local teammates all share one backend, so they serialise on a single GPU. With <code>--peers</code> (alias <code>--distribute</code>) the team round-robins claimed tasks across the local backend <strong>and reachable <a href="https://github.com/evi-assistant/evi-ai/blob/main/docs/features#federation" target="_blank" rel="noopener">federation peers</a></strong> — each peer is separate hardware, so this is where team parallelism becomes real wall-clock speedup (e.g. your main box + a P40 box draining one task list together). A peer that goes unreachable mid-run falls back to running its task locally, so it never stalls the team. Peers must be running <code>evi web --host 0.0.0.0</code> and listed via <code>evi peer add</code>.</p>
+<h3>Workflows</h3>
+<p>A workflow (<code>evi/workflows.py</code>) orchestrates <strong>independent</strong> steps, where a <em>recipe</em> is by contrast a sequence of turns through one shared conversation. Each step:</p>
+<ul><li>runs its <strong>own headless agent</strong> (fresh context),</li><li>runs <strong>concurrently</strong> with adjacent steps marked <code>parallel = true</code> (a contiguous run of parallel steps forms a fan-out block),</li><li>can interpolate earlier steps' output and workflow vars into its prompt via <code>{step_id}</code> / <code>{var}</code>.</li></ul>
+<p>A parallel block sees a <em>frozen snapshot</em> of outputs produced <strong>before</strong> that block, so a following sequential step is the natural fan-in point. Use <code>{{</code> and <code>}}</code> for literal braces. Unknown references raise a clear <code>WorkflowError</code> listing the known names.</p>
+<p>Workflows live at <code>~/.evi/workflows/&lt;name&gt;.toml</code>. Each step may set a <code>mode</code> (<code>chat</code> | <code>cowork</code> | <code>code</code>) to swap to that mode's tool preset; otherwise it uses your enabled tools. Workflow runs are <strong>unattended</strong>, so every step's agent auto-approves all tool calls.</p>
+<h3>Federation</h3>
+<p>Federation (<code>evi/federation.py</code>) lets your eVi POST a task to a peer eVi's <code>/api/federate</code> endpoint and return its answer. Peers live in <code>~/.evi/peers.json</code> (kept separate from synced config so per-peer tokens don't leak). Transport is plain HTTP with the peer's existing web bearer token — no new trust model. Default delegation timeout is <strong>180 s</strong>.</p>
+<p>On the <strong>serving</strong> side, <code>/api/federate</code> is <strong>off unless</strong> the peer sets <code>[federation] serve = true</code> (otherwise HTTP 403). When enabled, the served task runs <strong>non-interactively</strong>: the peer's agent denies any tool not already in its auto-approve list (<code>permission_callback</code> returns <code>False</code>), so a remote task can't trigger surprises like shell or network tools. A peer-side error comes back as a JSON <code>error</code>, surfaced to the caller as <code>ERROR: peer &lt;name&gt;: …</code>.</p>
+<h2>Setup</h2>
+<h3>Subagents (config: <code>~/.evi/config.toml</code>, section <code>[tools]</code>)</h3>
+<p>Subagent <em>tools</em> are gated by the <code>subagent</code> tool toggle, which is <strong>off by default</strong> (it's part of the <code>code</code> mode preset). The <code>subagent</code> permission category also deliberately does <strong>not</strong> auto-approve — spawning agents is something you may want to see first.</p>
+<pre><code class="language-toml">[tools]
+subagent = true               # enable delegate / delegate_explore / parallel_research
+
+[auto]
+# Optional: auto-approve subagent spawns so they run without a prompt.
+auto_approve = ["fs", "code", "memory", "skills", "image", "subagent"]</code></pre>
+<p>No pip extras are required for subagents or workflows — they're core.</p>
+<h3>Workflows (files: <code>~/.evi/workflows/*.toml</code>)</h3>
+<p>No config keys. Create the directory implicitly with <code>evi workflow new &lt;name&gt;</code>, which writes a starter template. A workflow file supports:</p>
+<ul><li><code>name</code>, <code>description</code> — metadata.</li><li><code>[vars]</code> — default variables (override at run time with <code>--var k=v</code>).</li><li><code>[[steps]]</code> — each needs a non-empty <code>prompt</code>; optional <code>id</code> (defaults to <code>step&lt;N&gt;</code>, must be unique), <code>parallel = true</code>, <code>mode</code>, and <code>label</code>.</li></ul>
+<h3>Federation (config: <code>[federation]</code>; peers: <code>~/.evi/peers.json</code>)</h3>
+<p>To <strong>delegate to</strong> peers, enable the network capability and list your peers:</p>
+<pre><code class="language-toml">[tools]
+federation = true             # enables the delegate_peer tool (off by default)
+
+[federation]
+serve = false                 # this instance answers federated tasks? default false</code></pre>
+<pre><code class="language-json">[
+  { "name": "gpu", "url": "http://gpu-box:8473", "token": "&lt;peer web token&gt;" }
+]</code></pre>
+<p>In <code>peers.json</code>, <code>name</code> and <code>url</code> are required; <code>token</code> is the peer's web bearer token (omit if the peer needs no auth). Missing or malformed files yield no peers; bad entries are skipped.</p>
+<p>To let this instance <strong>answer</strong> federated tasks you need <strong>two</strong> things:</p>
+<ol><li><strong>Serving on.</strong> Toggle <strong>Settings → Peers → "answer federation requests"</strong> (writes <code>[federation] serve = true</code>; takes effect immediately, no restart — no need to hand-edit <code>config.toml</code>). The CLI/<code>peers.json</code> equivalent is still <code>[federation] serve = true</code>.</li><li><strong>Reachable on the network.</strong> The server must listen beyond loopback. Run <code>evi web --host 0.0.0.0</code> (and allow the port — default <strong>8473</strong> — through the firewall). <strong>Desktop caveat:</strong> the desktop app currently binds the bundled server to <code>127.0.0.1</code> only, so a desktop instance isn't reachable as a peer yet — run the server directly on the peer box with <code>evi-server.exe --host 0.0.0.0 --port 8473</code> (or <code>evi web --host 0.0.0.0</code>). A "scan finds nothing" with the firewall open almost always means the peer is bound to loopback, not the firewall.</li></ol>
+<p>The two are independent: serving-on without LAN-binding answers only localhost; LAN-binding without serving-on returns HTTP 403 to delegations. The full two-node path (probe → reachable → delegate → serve-gating → distributed team runner) is covered by <code>tests/e2e/test_federation_network.py</code>.</p>
+<h2>Usage</h2>
+<h3>CLI — list subagent profiles</h3>
+<pre><code class="language-text">evi agents</code></pre>
+<p>Lists every profile (built-in + plugin) with its tool categories, origin, and a prompt preview. Built-in profiles are used via the <code>delegate(profile, task)</code> tool from inside a chat.</p>
+<h3>Inside a chat — delegate</h3>
+<p>When the <code>subagent</code> tools are enabled, the model can call them directly. You just ask in natural language, e.g. "explore where the config is loaded and report back" → the agent calls <code>delegate_explore</code>. For broad investigations it can call <code>parallel_research</code> with several sub-questions.</p>
+<h3>CLI — workflows</h3>
+<pre><code class="language-text">evi workflow new &lt;name&gt;            # write a starter ~/.evi/workflows/&lt;name&gt;.toml
+evi workflow list                  # list saved workflows (step + parallel counts)
+evi workflow show &lt;name&gt;           # show steps, vars, and prompts
+evi workflow run &lt;name&gt; [--var k=v ...] [--json]</code></pre>
+<p><code>evi workflow run</code> executes each step as its own headless agent (tools auto-approved). <code>--var k=v</code> overrides a workflow var (repeatable). <code>--json</code> prints <code>{step_id: output}</code> as JSON instead of the live, step-by-step console output.</p>
+<h3>CLI — federation / peers</h3>
+<pre><code class="language-text">evi peer list                      # configured peers, with live reachability + version
+evi peer add &lt;name&gt; &lt;url&gt; [--token …] [--overwrite]
+evi peer remove &lt;name&gt;
+evi peer scan [--port N]           # sweep the local /24 for running eVi instances
+evi peer run &lt;name&gt; "&lt;task&gt;"       # delegate a task to a peer and print its answer</code></pre>
+<p>The <code>delegate_peer(peer, task)</code> tool does the same from inside a chat when the <code>federation</code> tool toggle is on.</p>
+<h3>Web / Desktop — the Peers panel</h3>
+<p><strong>Settings → Peers</strong> manages federation without the CLI:</p>
+<ul><li>lists configured peers with a live status dot (green = reachable, with the peer's eVi version + active model from its <code>/api/health</code>; red = unreachable — machine off or <code>evi web</code> not running);</li><li>shows whether <strong>this</strong> instance is serving federation requests (<code>[federation] serve</code>);</li><li>an add-peer form (name / URL / optional token) and per-peer <strong>Remove</strong>;</li><li><strong>Scan local network</strong> — probes your /24 for eVi instances on port 8473 (raw-socket connect, then an <code>/api/health</code> fingerprint so a random web server isn't mistaken for a peer; ~2 s). Hits show host, version, and model, with a one-click <strong>Add</strong>; already-configured peers are marked.</li></ul>
+<p>Backed by <code>GET /api/peers</code>, <code>POST /api/peers[/remove]</code>, and <code>POST /api/peers/scan</code> (<code>{port?, hosts?}</code>). Note: discovery requires the peer to listen beyond loopback — start it with <code>evi web --host 0.0.0.0</code> and allow the port through its firewall.</p>
+<h3>Web / desktop — Dispatch view</h3>
+<p>The web UI's Dispatch view (<code>GET /api/dispatch</code>) shows every live session with its mode, message count, token usage/ceiling, and pending tool count, alongside the workflows you can launch. You can run a workflow headless server-side via <code>POST /api/dispatch/workflow/{name}</code> (body <code>{ "vars": { ... } }</code>), where each step runs as its own auto-approved agent and the response is <code>{step_id: output}</code>.</p>
+<p><strong>Live agent-watch.</strong> While the Dispatch panel is open it subscribes to <code>GET /api/dispatch/stream</code> (Server-Sent Events) and re-renders the session list in real time — a pulsing green dot marks any session whose turn is mid-flight, so you can watch agents work across tabs (eVi's analogue of the Claude Code Agent view). The stream emits a snapshot every <code>interval</code> seconds (default 1.5, clamped 0.25–10); pass <code>limit=N</code> to end it after N snapshots (one-off polls / tests).</p>
+<p>The web server also exposes the receiving end of federation, <code>POST /api/federate</code> (body <code>{ "task": "...", "mode": "" }</code>), which only responds when <code>[federation] serve = true</code>.</p>
+<h2>Examples</h2>
+<h3>Example 1 — A parallel research-and-synthesize workflow</h3>
+<p>Create the workflow:</p>
+<pre><code class="language-text">evi workflow new research</code></pre>
+<p>Edit <code>~/.evi/workflows/research.toml</code> so the two angles run in parallel and the last step fans them in:</p>
+<pre><code class="language-toml">name = "research"
+description = "Plan, research two angles in parallel, then synthesize."
+
+[vars]
+topic = "local-first AI"
+
+[[steps]]
+id = "plan"
+prompt = "Outline an approach to research {topic}."
+
+[[steps]]
+id = "pros"
+parallel = true
+prompt = "Given this plan, list the upsides of {topic}.\nPlan: {plan}"
+
+[[steps]]
+id = "cons"
+parallel = true
+prompt = "Given this plan, list the downsides of {topic}.\nPlan: {plan}"
+
+[[steps]]
+id = "synth"
+prompt = "Synthesize a balanced take.\nUpsides: {pros}\nDownsides: {cons}"</code></pre>
+<p>Run it, overriding the topic and asking for machine-readable output:</p>
+<pre><code class="language-text">evi workflow run research --var topic="self-hosted vector search" --json</code></pre>
+<p><code>pros</code> and <code>cons</code> execute concurrently (each its own headless agent off the same <code>plan</code> snapshot); <code>synth</code> waits for both and merges them. Output:</p>
+<pre><code class="language-json">{
+  "plan": "1. Define evaluation criteria…",
+  "pros": "- Data never leaves the device…",
+  "cons": "- Index maintenance overhead…",
+  "synth": "On balance, self-hosted vector search…"
+}</code></pre>
+<h3>Example 2 — Offload heavy work to a GPU peer</h3>
+<p>On the <strong>GPU box</strong>, opt in to serving and start the web server:</p>
+<pre><code class="language-toml"># ~/.evi/config.toml on the GPU box
+[federation]
+serve = true</code></pre>
+<p>On your <strong>laptop</strong>, register the peer and enable the federation tool:</p>
+<pre><code class="language-json">// ~/.evi/peers.json on the laptop
+[
+  { "name": "gpu", "url": "http://gpu-box:8473", "token": "PASTE_GPU_WEB_TOKEN" }
+]</code></pre>
+<pre><code class="language-toml"># ~/.evi/config.toml on the laptop
+[tools]
+federation = true</code></pre>
+<p>Delegate a self-contained task and print the peer's answer:</p>
+<pre><code class="language-text">evi peer list
+# →   gpu  http://gpu-box:8473 (token set)
+
+evi peer run gpu "Summarize the architecture of the repo at /srv/project and list its top 5 risks."</code></pre>
+<p>The big model on the GPU box runs the task non-interactively (only its auto-approved tools are available) and returns the final text.</p>
+<h3>Example 3 — A plugin-supplied "security" subagent</h3>
+<p>Drop an <code>agents.toml</code> into a plugin directory to add a namespaced profile:</p>
+<pre><code class="language-toml"># &lt;plugin&gt;/agents.toml
+[[agent]]
+name = "security"
+system_prompt = "You are a security reviewer. Read code and report vulnerabilities. Do not modify anything."
+tools = ["fs"]</code></pre>
+<p>Confirm it's registered, then use it from a chat via the generic delegate tool:</p>
+<pre><code class="language-text">evi agents
+# →   &lt;plugin&gt;:security  (fs · plugin)
+#       You are a security reviewer. Read code and report vulnerabilities…</code></pre>
+<p>Inside a chat (with <code>subagent</code> tools enabled), the model invokes it as <code>delegate("&lt;plugin&gt;:security", "Audit the auth module for injection risks.")</code>.</p>
+<h2>Notes / limits</h2>
+<ul><li><strong>Subagent tools are off by default.</strong> Set <code>[tools] subagent = true</code> (it's also included in <code>code</code> mode). Spawns are not auto-approved unless you add <code>subagent</code> to <code>[auto] auto_approve</code>.</li><li><strong>Category-level scoping only.</strong> Profiles grant whole tool <em>categories</em>; there is no per-tool allow-list inside a profile. The <code>explore</code> profile is read-only (<code>fs</code>); the <code>plan</code> profile gets no tools at all.</li><li><strong>Parallelism is bounded.</strong> <code>parallel_research</code> caps at <strong>6</strong> concurrent Explore subagents; the parallel runner uses up to 4 workers by default. A single local model serialises inference regardless, so expect speedups mainly on tool-heavy work or remote/multi-GPU backends.</li><li><strong>Subagent depth.</strong> Each subagent runs at most <code>max_turns=6</code> and returns text plus a short tool trace; it's meant for bounded, one-shot delegation, not open-ended sessions.</li><li><strong>Workflows are unattended.</strong> Every step auto-approves all tool calls (<code>enable_auto_all</code>). Don't put steps that touch dangerous tools (shell, computer control, network writes) into a workflow you run unsupervised unless you trust the prompts. Malformed workflow files are skipped by <code>list</code>, and template errors (e.g. an unknown <code>{ref}</code> or unescaped brace) raise a clear <code>WorkflowError</code>.</li><li><strong>Federation is opt-in on both ends.</strong> The caller needs `[tools] federation = true<code> and a </code>peers.json<code> entry; the responder needs </code>[federation] serve = true`. Serving is <strong>deny-by-default</strong> for tools — a federated task can only use the responder's already-auto-approved tools, never trigger fresh prompts.</li><li><strong>Security of tokens.</strong> Federation reuses the peer's <strong>web bearer token</strong> over plain HTTP — there's no separate trust model and no TLS by default. Keep peers on a trusted network (LAN/VPN); <code>peers.json</code> lives outside synced config so per-peer tokens don't propagate.</li><li><strong>Fail-open / fail-safe behaviors.</strong> Plugin profile scanning never breaks core subagents (errors are swallowed); a missing/malformed <code>peers.json</code> simply yields no peers; an unreachable peer raises <code>FederationError</code> (surfaced as a red CLI message or an <code>ERROR: …</code> tool result), and a peer-side error is returned as <code>ERROR: peer &lt;name&gt;: …</code> rather than crashing the caller.</li><li><strong>Exact paths.</strong> Config: <code>~/.evi/config.toml</code> (<code>%USERPROFILE%\.evi\config.toml</code> on Windows; override the base dir with <code>EVI_HOME</code>). Peers: <code>~/.evi/peers.json</code>. Workflows: <code>~/.evi/workflows/&lt;name&gt;.toml</code>. Plugin profiles: <code>&lt;plugin&gt;/agents.toml</code>.</li></ul>
+    </article>
+    <a class="doc-source" href="https://github.com/evi-assistant/evi-ai/blob/main/docs/features/agents.md">Edit on GitHub ↗</a>
+  </main>
+  <footer class="doc-foot">
+    <a href="index.html">← All documentation</a>
+    <span>eVi — local-first personal AI assistant</span>
+  </footer>
+</body>
+</html>

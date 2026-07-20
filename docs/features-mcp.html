@@ -1,0 +1,146 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>MCP (client + serve) — eVi docs</title>
+  <meta name="description" content="MCP (Model Context Protocol) lets eVi connect to other tool-providing programs — and lets other AI apps connect to eVi. eVi plays both roles: — eVi documentation." />
+  <link rel="stylesheet" href="../styles.css" />
+  <link rel="stylesheet" href="docs.css" />
+  <link rel="icon" href="../favicon.svg" type="image/svg+xml" />
+</head>
+<body>
+  <header class="nav">
+    <a class="brand" href="../index.html" aria-label="eVi home">
+      <span class="brand-mark">e<span class="brand-accent">Vi</span></span>
+    </a>
+    <nav class="nav-links">
+      <a href="index.html">Docs</a>
+      <a href="../index.html#install">Install</a>
+      <a href="../index.html#download">Download</a>
+      <a class="nav-gh" href="https://github.com/evi-assistant/evi-ai">GitHub ↗</a>
+    </nav>
+  </header>
+  <main class="doc-main">
+    <article class="doc">
+<h1>MCP (client + serve)</h1>
+<h2>Overview</h2>
+<p><a href="https://modelcontextprotocol.io" target="_blank" rel="noopener">MCP (Model Context Protocol)</a> lets eVi connect to other tool-providing programs — and lets other AI apps connect to eVi. eVi plays <strong>both roles</strong>:</p>
+<ul><li><strong>MCP client</strong> — eVi launches one or more external MCP servers (a filesystem server, a git server, a Jira server, whatever you configure) and exposes <em>their</em> tools to eVi's agent. Your assistant can now call those tools mid-conversation as if they were built in.</li><li><strong>MCP server</strong> (<code>evi mcp serve</code>) — eVi runs <em>as</em> an MCP server so other agents (Claude Desktop, Cursor, Cline, Continue) can reach into eVi: call a curated subset of eVi's own tools, read your long-term memory entries as resources, and pull your saved slash-command templates as prompts.</li></ul>
+<p>Use the <strong>client</strong> side when you want eVi to do more than its built-in toolset allows, without writing a Python plugin — just point it at an existing MCP server. Use the <strong>serve</strong> side when you'd rather drive eVi's tools and memory from a desktop AI app you already use.</p>
+<p>Everything is local-first: client servers run as child processes on your machine over stdio, and the serve side defaults to stdio (spawned by the client) — nothing touches the network unless you explicitly opt into HTTP.</p>
+<h2>How it works</h2>
+<h3>Client (consuming external servers)</h3>
+<ol><li>On startup, eVi reads <code>~/.evi/mcp.json</code> (plus any <code>mcp.json</code> shipped by installed plugins) into a list of <code>MCPServer</code> launch configs. Missing or malformed files yield an empty list — eVi keeps running.</li><li>The consume-side allowlist <code>[tools] mcp_allow</code> is applied (see Setup). Then each <strong>enabled</strong> server is spawned as a child process over <strong>stdio</strong> using the <code>mcp</code> Python SDK.</li><li>For each server, eVi calls <code>initialize</code> and <code>list_tools</code>, then wraps every discovered tool as a native eVi tool named <strong><code>&lt;server&gt;.&lt;tool&gt;</code></strong> and registers it in eVi's tool registry. (Plugin-supplied servers are namespaced <code>&lt;plugin&gt;:&lt;server&gt;</code>, so they can't collide with your own.)</li><li>When the agent calls one of those tools, the call is forwarded to the server through an async-to-sync <strong>bridge</strong> (one asyncio loop on a daemon thread), so eVi's synchronous tool layer can drive the all-async MCP SDK.</li><li>Tool results are flattened to text for the model: text content is concatenated; non-text items (images, etc.) become a <code>[&lt;type&gt; omitted]</code> placeholder; errors are prefixed <code>ERROR:</code>.</li></ol>
+<p><strong>Fail-open by design:</strong> a server that fails to start is logged once and skipped — the rest of eVi keeps working. On shutdown eVi unregisters the added tools first (so an in-flight agent loop can't reach a closed session), then closes each server session.</p>
+<h3>Server (<code>evi mcp serve</code>)</h3>
+<p>eVi builds a standard MCP <code>Server</code> named <code>evi</code> exposing three things, all drawn from eVi's own single sources of truth:</p>
+<ul><li><strong>Tools</strong> — entries from eVi's tool registry, filtered by <strong>category</strong> (and optionally an exact-name allow-list). The same name / description / JSON-schema the agent already uses is reused verbatim. The default surface is the categories <code>memory</code>, <code>index</code>, <code>calendar</code>, <code>git</code>. <strong>shell, computer, and code-write tools are deliberately NOT exposed by default.</strong></li><li><strong>Resources</strong> — each of your long-term memory entries as <code>evi://memory/&lt;name&gt;</code> (mimeType <code>text/markdown</code>).</li><li><strong>Prompts</strong> — each saved slash-command template (<code>~/.evi/commands/*.md</code>); each accepts an optional free-text <code>args</code> argument substituted for <code>{args}</code> in the template body.</li></ul>
+<p>Transports: <strong>stdio</strong> (the default; what a desktop MCP client spawns) or <strong>streamable HTTP</strong> (<code>--http</code>) served at the <code>/mcp</code> path, with an optional bearer-token gate (<code>--token</code>) for remote/untrusted clients.</p>
+<h2>Setup</h2>
+<h3>Client side</h3>
+<p><strong>1. Define your servers</strong> in <code>~/.evi/mcp.json</code> (on Windows: <code>C:\Users\&lt;you&gt;\.evi\mcp.json</code>; the directory honors the <code>EVI_HOME</code> environment variable if set). The file is a <strong>JSON array</strong> of server objects:</p>
+<table><thead><tr><th>Field</th><th>Type</th><th>Required</th><th>Default</th><th>Meaning</th></tr></thead><tbody><tr><td><code>name</code></td><td>string</td><td>yes</td><td>—</td><td>Server label; tools register as <code>&lt;name&gt;.&lt;tool&gt;</code></td></tr><tr><td><code>command</code></td><td>string</td><td>stdio only</td><td>—</td><td>Executable to launch (e.g. <code>npx</code>, <code>uvx</code>, <code>python</code>)</td></tr><tr><td><code>args</code></td><td>string[]</td><td>no</td><td><code>[]</code></td><td>Arguments passed to the command</td></tr><tr><td><code>env</code></td><td>object</td><td>no</td><td><code>{}</code></td><td>Extra environment variables for the child process</td></tr><tr><td><code>transport</code></td><td>string</td><td>no</td><td><code>stdio</code></td><td><code>stdio</code> (spawn <code>command</code>) or a remote transport: <code>http</code> (streamable-http) / <code>sse</code></td></tr><tr><td><code>url</code></td><td>string</td><td>http/sse only</td><td>—</td><td>The remote server's endpoint URL</td></tr><tr><td><code>headers</code></td><td>object</td><td>no</td><td><code>{}</code></td><td>Request headers for the remote transport (e.g. <code>Authorization</code>)</td></tr><tr><td><code>enabled</code></td><td>bool</td><td>no</td><td><code>true</code></td><td>Set <code>false</code> to keep a server in the file but skip it</td></tr></tbody></table>
+<p>A stdio entry needs <code>command</code>; a remote entry needs <code>url</code> (transport defaults to <code>http</code> when a <code>url</code> is present). Entries missing the required field are skipped silently. Print the exact path any time with <code>evi mcp path</code>.</p>
+<p><strong>Remote (HTTP) servers.</strong> To connect to a hosted MCP server instead of spawning a local process:</p>
+<pre><code class="language-json">[
+  { "name": "linear", "transport": "http", "url": "https://mcp.linear.app/mcp",
+    "headers": { "Authorization": "Bearer &lt;token&gt;" } }
+]</code></pre>
+<p>or add it from the CLI (header values are never echoed back by <code>list-servers</code>):</p>
+<pre><code class="language-bash">evi mcp add-http linear https://mcp.linear.app/mcp -H "Authorization=Bearer &lt;token&gt;"
+evi mcp add-http legacy https://host/sse --sse        # legacy SSE transport</code></pre>
+<p><strong>2. Enable MCP</strong> in <code>~/.evi/config.toml</code> (it is <strong>off by default</strong>):</p>
+<pre><code class="language-toml">[tools]
+mcp = true</code></pre>
+<p><strong>3. (Optional) Gate which servers load per machine.</strong> When <code>[tools] mcp_allow</code> is non-empty, only servers whose <code>name</code> is in the list are loaded — handy if you sync one <code>mcp.json</code> across machines but want different servers active on each:</p>
+<pre><code class="language-toml">[tools]
+mcp = true
+mcp_allow = ["filesystem", "git"]</code></pre>
+<p>An empty/unset <code>mcp_allow</code> loads every server in the file (each still honoring its own <code>enabled</code> flag).</p>
+<p><strong>4. Install the MCP extra</strong> (the <code>mcp</code> SDK is an optional dependency):</p>
+<pre><code class="language-bash">pip install 'evi-assistant[mcp]'</code></pre>
+<p>If MCP is enabled but the package isn't installed, eVi prints a hint and continues without MCP tools.</p>
+<h3>Server side (<code>evi mcp serve</code>)</h3>
+<p>No config keys are required — <code>evi mcp serve</code> works out of the box once the <code>mcp</code> extra is installed. You control the exposed surface with command flags:</p>
+<ul><li><code>--categories</code> / <code>-c</code> — comma-separated tool categories to expose (default <code>memory,index,calendar,git</code>).</li><li><code>--tools</code> — optional comma-separated allow-list of exact tool names <em>within</em> those categories.</li><li><code>--http</code> — serve streamable HTTP instead of stdio.</li><li><code>--host</code> (default <code>127.0.0.1</code>) and <code>--port</code> (default <code>8765</code>) — HTTP bind address.</li><li><code>--token</code> — require <code>Authorization: Bearer &lt;token&gt;</code> on every HTTP request.</li></ul>
+<h2>Usage</h2>
+<h3>CLI commands (client side)</h3>
+<table><thead><tr><th>Command</th><th>What it does</th></tr></thead><tbody><tr><td><code>evi mcp path</code></td><td>Print the path to your <code>mcp.json</code></td></tr><tr><td><code>evi mcp list-servers</code></td><td>List configured servers from <code>mcp.json</code> with on/off state</td></tr><tr><td><code>evi mcp add &lt;name&gt; &lt;command&gt; [args…]</code></td><td>Add a server. Use <code>--</code> before args that start with a dash; <code>--env KEY=VALUE</code> (repeatable) for secrets; <code>--disabled</code>; <code>--overwrite</code></td></tr><tr><td><code>evi mcp remove &lt;name&gt;</code></td><td>Remove a user server (plugin-supplied <code>plugin:name</code> servers go with <code>evi plugin remove</code>)</td></tr><tr><td><code>evi mcp enable &lt;name&gt;</code> / <code>disable &lt;name&gt;</code></td><td>Flip a server's <code>enabled</code> flag without deleting it</td></tr><tr><td><code>evi mcp list-tools</code></td><td>Start the servers and enumerate every tool they expose</td></tr></tbody></table>
+<pre><code class="language-bash"># example: the filesystem server, scoped to your projects dir
+evi mcp add filesystem npx -- -y @modelcontextprotocol/server-filesystem ~/projects
+evi mcp list-tools          # verify it connects + see what it exposes</code></pre>
+<p>Once <code>tools.mcp = true</code> and servers are configured, MCP tools are available automatically in normal <code>evi</code> usage (CLI chat, the REPL, and the web UI) — they appear in the registry as <code>&lt;server&gt;.&lt;tool&gt;</code> and the agent calls them like any other tool. <code>evi mcp list-tools</code> warns if <code>tools.mcp</code> is still <code>false</code>.</p>
+<h3>CLI commands (server side)</h3>
+<table><thead><tr><th>Command</th><th>What it does</th></tr></thead><tbody><tr><td><code>evi mcp serve</code></td><td>Run eVi as an MCP server over <strong>stdio</strong> (what a desktop client spawns)</td></tr><tr><td><code>evi mcp serve --http --token &lt;secret&gt;</code></td><td>Run as a streamable-HTTP server, bearer-token gated</td></tr><tr><td><code>evi mcp serve-config</code></td><td>Print a ready-to-paste client config snippet (<code>mcpServers</code> block)</td></tr></tbody></table>
+<h3>Web / Desktop — the MCP panel</h3>
+<p><strong>Settings → MCP</strong> manages servers without touching the file:</p>
+<ul><li>shows whether the <code>mcp</code> tool toggle is on, plus the active allowlist (servers outside it are marked <em>blocked by allowlist</em>);</li><li>one row per server — enabled dot, command + args, env <strong>key names</strong> (values are never shown: they may hold API keys), plugin-supplied servers marked and read-only;</li><li>per-server <strong>Enable/Disable</strong> and <strong>Remove</strong>, and an add form (name, command, args as one shell-style string). Env vars aren't set in the UI — use <code>evi mcp add --env KEY=VALUE</code> or edit <code>mcp.json</code> for those.</li></ul>
+<p>Backed by <code>GET /api/mcp</code> and <code>POST /api/mcp[/remove|/toggle]</code>. The allowlist itself stays editable as <strong>"MCP server allowlist"</strong> under Tools (bound to <code>[tools] mcp_allow</code>). When <code>tools.mcp</code> is enabled and servers are configured, the web server starts the same <code>MCPManager</code> on launch, so MCP tools are available in browser chat too.</p>
+<h2>Examples</h2>
+<h3>Example 1 — Client: give eVi a filesystem server and a git server</h3>
+<p>Create <code>~/.evi/mcp.json</code>:</p>
+<pre><code class="language-json">[
+  {
+    "name": "filesystem",
+    "command": "npx",
+    "args": ["-y", "@modelcontextprotocol/server-filesystem", "C:/Users"],
+    "env": {},
+    "enabled": true
+  },
+  {
+    "name": "git",
+    "command": "uvx",
+    "args": ["mcp-server-git", "--repository", "C:/evi"]
+  }
+]</code></pre>
+<p>Enable MCP in <code>~/.evi/config.toml</code>:</p>
+<pre><code class="language-toml">[tools]
+mcp = true</code></pre>
+<p>Install the extra, then verify what's wired up:</p>
+<pre><code class="language-bash">pip install 'evi-assistant[mcp]'
+
+evi mcp list-servers
+# on  filesystem — npx -y @modelcontextprotocol/server-filesystem C:/Users
+# on  git — uvx mcp-server-git --repository C:/evi
+
+evi mcp list-tools
+# filesystem.read_file — Read the complete contents of a file...
+# filesystem.list_directory — Get a detailed listing...
+# git.git_log — Shows the commit logs...
+# ...</code></pre>
+<p>From here the agent can call e.g. <code>git.git_log</code> or <code>filesystem.read_file</code> during any chat.</p>
+<h3>Example 2 — Serve: expose eVi to Claude Desktop / Cursor</h3>
+<p>Generate a client config snippet:</p>
+<pre><code class="language-bash">evi mcp serve-config --categories memory,index,calendar</code></pre>
+<p>It prints a block you paste into your MCP client's <code>mcpServers</code> config (the <code>command</code> is your current Python interpreter):</p>
+<pre><code class="language-json">{
+  "mcpServers": {
+    "evi": {
+      "command": "/path/to/python",
+      "args": ["-m", "evi", "mcp", "serve", "--categories", "memory,index,calendar"]
+    }
+  }
+}</code></pre>
+<p>The client spawns <code>evi mcp serve</code> over stdio on demand; eVi's memory, index, and calendar tools — plus your memory entries (as <code>evi://memory/&lt;name&gt;</code> resources) and saved commands (as prompts) — show up inside that app.</p>
+<h3>Example 3 — Serve over HTTP for a remote client</h3>
+<p>Run a token-gated streamable-HTTP server, narrowing to two exact tools within the <code>memory</code> category:</p>
+<pre><code class="language-bash">evi mcp serve --http \
+  --host 0.0.0.0 \
+  --port 8765 \
+  --token "$(openssl rand -hex 32)" \
+  --categories memory \
+  --tools memory.search,memory.read</code></pre>
+<p>The MCP endpoint is served at <code>/mcp</code> (e.g. <code>http://host:8765/mcp</code>). Every request must send <code>Authorization: Bearer &lt;token&gt;</code> or it gets a <code>401</code>.</p>
+<h2>Notes / limits</h2>
+<ul><li><strong>stdio only on the client side.</strong> eVi launches external servers over stdio (child processes); there is no built-in support for connecting to a remote HTTP MCP server as a <em>client</em>. The HTTP transport exists only on the <em>serve</em> side.</li><li><strong>Fail-open.</strong> A server that won't start (bad command, missing binary) is logged once and skipped — it never blocks eVi. Malformed <code>mcp.json</code> entries are dropped silently; a connection that actually fails is what gets logged.</li><li><strong>Off by default.</strong> Client MCP requires <code>tools.mcp = true</code>; without it, <code>mcp.json</code> is ignored.</li><li><strong>Trust the servers you launch.</strong> An MCP server is just a program eVi runs with the <code>command</code>/<code>args</code>/<code>env</code> you give it — it executes with your privileges. Only configure servers you trust, and scope filesystem/git servers to the directories you intend.</li><li><strong>Curated serve surface.</strong> <code>evi mcp serve</code> defaults to <code>memory,index,calendar,git</code> and deliberately excludes shell, computer-control, and code-write tools. Widening <code>--categories</code> can hand powerful tools to whatever connects — do so consciously.</li><li><strong>HTTP security.</strong> Running <code>--http</code> without <code>--token</code> is unauthenticated; eVi prints a warning and you should bind to localhost only in that case. For any non-localhost exposure, set <code>--token</code> (compared in constant time) and prefer running behind TLS.</li><li><strong>Result flattening.</strong> When eVi consumes a server's tool, non-text content (images, binary) is replaced with a <code>[&lt;type&gt; omitted]</code> placeholder so the model knows something was elided rather than silently dropped.</li><li><strong>Call timeout.</strong> Forwarded client tool calls default to a 120-second timeout; a server that hangs will surface a timeout rather than block forever.</li><li><strong>Lazy SDK import.</strong> The <code>mcp</code> package is imported only when needed, so the rest of eVi runs fine without the <code>[mcp]</code> extra installed — you just won't get MCP tools (client) or be able to <code>serve</code>.</li></ul>
+<p>Source of record: <code>C:\evi\evi\mcp\__init__.py</code>, <code>C:\evi\evi\mcp\manager.py</code>, <code>C:\evi\evi\mcp\bridge.py</code>, <code>C:\evi\evi\mcp\servers.py</code>, <code>C:\evi\evi\mcp\publish.py</code>, and the <code>mcp_app</code> commands in <code>C:\evi\evi\apps\cli\main.py</code> (lines 4488-4600). Config keys: <code>C:\evi\evi\config.py</code> (<code>ToolToggles.mcp</code>, <code>ToolToggles.mcp_allow</code>; <code>MCP_CONFIG_PATH</code>).</p>
+    </article>
+    <a class="doc-source" href="https://github.com/evi-assistant/evi-ai/blob/main/docs/features/mcp.md">Edit on GitHub ↗</a>
+  </main>
+  <footer class="doc-foot">
+    <a href="index.html">← All documentation</a>
+    <span>eVi — local-first personal AI assistant</span>
+  </footer>
+</body>
+</html>

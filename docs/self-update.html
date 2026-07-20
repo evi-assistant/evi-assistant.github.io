@@ -1,0 +1,164 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Self-update design (Phase 29 proposal) — eVi docs</title>
+  <meta name="description" content="evi update lets a user pull a newer eVi version, verify it works, and roll back if it doesn&#x27;t. This doc is the design — none of it is built yet. Once approved, it becomes Phase 29. — eVi documentation." />
+  <link rel="stylesheet" href="../styles.css" />
+  <link rel="stylesheet" href="docs.css" />
+  <link rel="icon" href="../favicon.svg" type="image/svg+xml" />
+</head>
+<body>
+  <header class="nav">
+    <a class="brand" href="../index.html" aria-label="eVi home">
+      <span class="brand-mark">e<span class="brand-accent">Vi</span></span>
+    </a>
+    <nav class="nav-links">
+      <a href="index.html">Docs</a>
+      <a href="../index.html#install">Install</a>
+      <a href="../index.html#download">Download</a>
+      <a class="nav-gh" href="https://github.com/evi-assistant/evi-ai">GitHub ↗</a>
+    </nav>
+  </header>
+  <main class="doc-main">
+    <article class="doc">
+<h1>Self-update design (Phase 29 proposal)</h1>
+<p><code>evi update</code> lets a user pull a newer eVi version, verify it works, and roll back if it doesn't. This doc is the design — none of it is built yet. Once approved, it becomes Phase 29.</p>
+<h2>Goals</h2>
+<ol><li><strong>One-command upgrade.</strong> <code>evi update</code> is the only command a user should need.</li><li><strong>Always rollback-able.</strong> Every upgrade snapshots the prior `pip freeze` so we can restore an exact known-good state.</li><li><strong>Refuse to clobber dev work.</strong> Editable installs (`pip install -e .`) are never touched — we detect and refuse.</li><li><strong>Channels later.</strong> Stable PyPI is the default. Pre-release + custom index URL come in a follow-up.</li><li><strong>Don't surprise locked envs.</strong> Poetry / uv / pipenv projects get a clear "use your tool's upgrade command" message instead of a silently-broken venv.</li></ol>
+<h2>Non-goals (for now)</h2>
+<ul><li>Auto-updating the Tauri desktop binary — Tauri has its own updater; that's a separate phase.</li><li>Updating dependencies independently of eVi (only pinned-via-extras matter for our use cases).</li><li>Background / daemon checks. Update is always user-initiated.</li></ul>
+<h2>Command surface</h2>
+<table><thead><tr><th>Command</th><th>Purpose</th></tr></thead><tbody><tr><td><code>evi update</code></td><td>Check, show diff, prompt, upgrade.</td></tr><tr><td><code>evi update check</code></td><td>Check only — no install.</td></tr><tr><td><code>evi update --yes</code></td><td>Non-interactive upgrade.</td></tr><tr><td><code>evi update --to &lt;version&gt;</code></td><td>Pin an explicit version (downgrade allowed).</td></tr><tr><td><code>evi update rollback</code></td><td>Restore the most recent snapshot.</td></tr><tr><td><code>evi update rollback &lt;n&gt;</code></td><td>Restore the n-th most recent (1-indexed).</td></tr><tr><td><code>evi update rollback &lt;id&gt;</code></td><td>Restore a named snapshot dir.</td></tr><tr><td><code>evi update history</code></td><td>List snapshots.</td></tr><tr><td><code>evi update prune --keep &lt;n&gt;</code></td><td>Manual GC of old snapshots.</td></tr><tr><td><code>evi update from-wheel &lt;path&gt;</code></td><td>Offline install from a local wheel/sdist.</td></tr><tr><td><code>evi update settings</code></td><td>Print channel + snapshot retention.</td></tr></tbody></table>
+<h2>Storage layout</h2>
+<pre><code>~/.evi/snapshots/
+    2026-05-27T14-03-00_0.10.0_to_0.11.0/
+        requirements.txt        # pip freeze BEFORE the upgrade
+        version.txt             # "0.10.0"
+        metadata.json           # {"timestamp", "from", "to", "command"}
+    2026-06-02T09-12-44_0.11.0_to_0.11.1/
+        …</code></pre>
+<p>Snapshots are append-only. Default retention: <strong>last 5</strong>. A <code>prune</code> runs at the end of each successful upgrade to drop older ones.</p>
+<h2>State machine</h2>
+<pre><code>                              ┌──────────────────┐
+                              │  evi update      │
+                              │  (or --check)    │
+                              └─────────┬────────┘
+                                        │
+                                        ▼
+                              ┌──────────────────┐
+                              │  Probe PyPI      │   /pypi/evi-assistant/json
+                              └─────────┬────────┘
+                                        │
+                          current ≥ latest? ──── yes ──► "up to date"
+                                        │
+                                        no
+                                        │
+                                        ▼
+                              ┌──────────────────┐
+                              │  Detect install  │   editable? pipx? venv? locked-env?
+                              │      kind        │
+                              └─────────┬────────┘
+                                        │
+                       editable / locked-env / unknown
+                                        │
+                                        ▼
+                              ┌──────────────────┐
+                              │  Refuse + hint   │   message tailored to install kind
+                              └──────────────────┘
+
+                       venv (the happy path)
+                                        │
+                                        ▼
+                              ┌──────────────────┐
+                              │  Take snapshot   │   pip freeze + metadata
+                              └─────────┬────────┘
+                                        │
+                                        ▼
+                              ┌──────────────────┐
+                              │  pip install -U  │   --upgrade evi[==&lt;version&gt;]
+                              └─────────┬────────┘
+                                        │
+                                  exit 0?
+                                        │
+                              ┌─────────┴────────┐
+                              │                  │
+                            no                  yes
+                              │                  │
+                              ▼                  ▼
+                  ┌──────────────────┐  ┌──────────────────┐
+                  │  Surface stderr  │  │  Verify import   │   subprocess: python -c "import evi"
+                  │  + snapshot kept │  └─────────┬────────┘
+                  │  + hint rollback │            │
+                  └──────────────────┘    version matches?
+                                                  │
+                                          ┌───────┴────────┐
+                                          │                │
+                                         no              yes
+                                          │                │
+                                          ▼                ▼
+                              ┌──────────────────┐  ┌──────────────────┐
+                              │  Auto-rollback?  │  │  GC old snapshots│
+                              │  Or warn + hint  │  │  + done          │
+                              └──────────────────┘  └──────────────────┘</code></pre>
+<h2>Install-kind detection</h2>
+<p>We check, in order:</p>
+<ol><li><strong>Editable</strong> — parse the output of <code>pip show evi-assistant</code>. If it has an <code>Editable project location:</code> line, refuse with the editable location printed and a hint to <code>git pull</code> instead.</li><li><strong>pipx</strong> — if <code>PIPX_HOME</code> is in env OR <code>which evi</code> resolves under <code>~/.local/pipx/venvs/evi-assistant/</code>, suggest <code>pipx upgrade evi-assistant</code> rather than running pip ourselves.</li><li><strong>Locked env</strong> — if cwd (or any parent up to <code>$HOME</code>) has a <code>poetry.lock</code> / <code>uv.lock</code> / <code>Pipfile.lock</code>, suggest the right tool's upgrade command. The user can pass <code>--force</code> to override.</li><li><strong>Plain venv / system pip</strong> — the happy path. Run <code>pip install --upgrade</code>.</li></ol>
+<h2>The pip call</h2>
+<pre><code class="language-python">subprocess.run(
+    [sys.executable, "-m", "pip", "install", "--upgrade", spec],
+    check=False, capture_output=True, text=True, timeout=600,
+)</code></pre>
+<p><code>spec</code> is either <code>evi-assistant</code> (latest) or <code>evi-assistant==&lt;version&gt;</code>. <code>sys.executable</code> guarantees we install into the SAME interpreter that's running <code>evi</code>, which is critical — using bare <code>pip</code> could pick up a different venv.</p>
+<p>If <code>--from-wheel &lt;path&gt;</code> is used, <code>spec</code> becomes the path; pip handles wheels and sdists transparently.</p>
+<h2>Verification</h2>
+<p>After pip exits 0, we spawn:</p>
+<pre><code class="language-bash">python -c "import evi; print(evi.__version__)"</code></pre>
+<p>If that fails or returns the OLD version, we either:</p>
+<ul><li><strong>Interactive</strong>: ask the user "broken — roll back? [Y/n]"</li><li><strong><code>--yes</code></strong>: roll back automatically and exit non-zero with a clear error.</li></ul>
+<p>This catches the case where pip happily "succeeded" but the installed package can't import (e.g. a dep version conflict that pip didn't catch because eVi doesn't pin it strictly).</p>
+<h2>Rollback</h2>
+<pre><code class="language-python">subprocess.run(
+    [sys.executable, "-m", "pip", "install", "-r", snapshot / "requirements.txt"],
+    check=True, timeout=600,
+)</code></pre>
+<p>Then re-verify the import.</p>
+<p>Note: we restore ALL frozen packages, not just eVi. That's intentional — if the failure was caused by a transitive bump, just reinstalling eVi at the old version won't help. Restoring the full <code>pip freeze</code> is the only way to get a deterministic rollback.</p>
+<p>Risk: if the user installed something else in the venv between the snapshot and now, the rollback wipes that. Mitigation: print the <code>requirements.txt</code> diff before running and prompt to confirm. With <code>--yes</code>, skip the prompt — the user explicitly opted in.</p>
+<h2>Implementation skeleton</h2>
+<pre><code>evi/
+    update.py
+        ─ check_pypi() → LatestInfo {version, release_url, changelog_url}
+        ─ detect_install_kind() → "editable" | "pipx" | "locked" | "venv"
+        ─ Snapshot dataclass {dir, timestamp, from_version, to_version}
+        ─ create_snapshot(from_version, to_version) → Snapshot
+        ─ list_snapshots() → list[Snapshot]
+        ─ apply_upgrade(spec, *, dry_run=False) → UpgradeResult
+        ─ apply_rollback(snapshot) → RollbackResult
+        ─ verify_install() → (ok, installed_version, err)
+        ─ gc_snapshots(keep=5) → list[deleted]
+evi/apps/cli/main.py
+    ─ update_app = typer.Typer()
+    ─ @update_app.command("check")  → check_pypi() + render
+    ─ @update_app.command()         → check + prompt + apply_upgrade
+    ─ @update_app.command("rollback")
+    ─ @update_app.command("history")
+    ─ @update_app.command("prune")
+    ─ @update_app.command("from-wheel")
+    ─ @update_app.command("settings")</code></pre>
+<h2>Tests</h2>
+<ul><li>Mock <code>httpx.get("https://pypi.org/pypi/evi-assistant/json")</code> to return canned payloads (newer / same / older / 404).</li><li>Mock <code>subprocess.run</code> for pip calls — verify command shape, capture exit codes, simulate success + failure.</li><li>Real <code>tmp_path</code>-rooted snapshot dirs to exercise create / list / gc / rollback dispatch.</li><li><code>detect_install_kind</code> against synthetic <code>pip show</code> output.</li></ul>
+<h2>Open questions</h2>
+<ol><li><strong>Should rollback be one-step or stepped?</strong> Right now I propose "restore the full pip freeze". Alternative: only downgrade eVi itself, leave deps alone. Cleaner but doesn't recover from transitive bumps. I lean toward "full freeze, with a confirmation".</li><li><strong>Where do PyPI release notes come from?</strong> The PyPI JSON API exposes <code>description</code> (the README of that release). We could surface that verbatim, or link to GitHub's release page. Probably both.</li><li><strong>Auto-update via the scheduler?</strong> Could plug into the existing <code>evi/scheduler.py</code>. Defer — feels too aggressive without a "stable for N days" policy first.</li><li><strong>Versioning of snapshots themselves.</strong> Right now I propose a directory-name convention; a small <code>snapshots.json</code> index would make <code>list</code> faster and more reliable. Worth doing from day 1.</li></ol>
+<h2>Estimated scope</h2>
+<ul><li>Implementation: ~400 LOC in <code>evi/update.py</code>, ~200 LOC of CLI wiring.</li><li>Tests: ~300 LOC.</li><li>Total: a short phase, comparable to Phase 22 (distribution tooling).</li><li>No new deps — uses stdlib <code>subprocess</code>, <code>httpx</code> (already in core), and the user's installed <code>pip</code>.</li></ul>
+    </article>
+    <a class="doc-source" href="https://github.com/evi-assistant/evi-ai/blob/main/docs/self-update.md">Edit on GitHub ↗</a>
+  </main>
+  <footer class="doc-foot">
+    <a href="index.html">← All documentation</a>
+    <span>eVi — local-first personal AI assistant</span>
+  </footer>
+</body>
+</html>

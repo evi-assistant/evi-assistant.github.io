@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>eVi feature reference — eVi docs</title>
+  <meta name="description" content="A catalog of everything eVi does — what each feature is, how to use it from the CLI / REPL / Web, and where to configure it. Setup-heavy items link to configuration.md; surface cov… — eVi documentation." />
+  <link rel="stylesheet" href="../styles.css" />
+  <link rel="stylesheet" href="docs.css" />
+  <link rel="icon" href="../favicon.svg" type="image/svg+xml" />
+</head>
+<body>
+  <header class="nav">
+    <a class="brand" href="../index.html" aria-label="eVi home">
+      <span class="brand-mark">e<span class="brand-accent">Vi</span></span>
+    </a>
+    <nav class="nav-links">
+      <a href="index.html">Docs</a>
+      <a href="../index.html#install">Install</a>
+      <a href="../index.html#download">Download</a>
+      <a class="nav-gh" href="https://github.com/evi-assistant/evi-ai">GitHub ↗</a>
+    </nav>
+  </header>
+  <main class="doc-main">
+    <article class="doc">
+<h1>eVi feature reference</h1>
+<p>A catalog of everything eVi does — what each feature is, how to use it from the CLI / REPL / Web, and where to configure it. Setup-heavy items link to <a href="configuration.html" target="_blank" rel="noopener">configuration.md</a>; surface coverage is in <a href="cli-parity.html" target="_blank" rel="noopener">cli-parity.md</a>; the Claude-Code comparison is in <a href="claude-code-comparison.html" target="_blank" rel="noopener">claude-code-comparison.md</a>.</p>
+<blockquote><p>Conventions: <strong>CLI</strong> = <code>evi &lt;cmd&gt;</code>; <strong>REPL</strong> = a <code>/slash</code> command inside <code>evi chat</code>; <strong>Web</strong> = the browser/desktop UI. Everything is local-first and opt-in unless noted.</p></blockquote>
+<hr>
+<h2>Core chat</h2>
+<p><strong>Interactive chat</strong> — <code>evi chat</code> (REPL) or the Web chat view. Streams tokens, runs tools, shows a <strong>working-status</strong> bar (spinner + elapsed timer + live token count) while a turn runs.</p>
+<p><strong>Session modes</strong> — Chat / Cowork / Code presets gate the tool set. REPL: pick at launch; Web: the mode switcher; per-turn headless: <code>evi run -m code</code>.</p>
+<p><strong>Headless</strong> — <code>evi run "prompt" [-m mode] [-y] [--format json] [--schema f]</code>. One-shot for scripts/CI. Example: <code>git diff | evi run "review for bugs" -y</code>.</p>
+<p><strong>Batch</strong> — <code>evi batch prompts.jsonl -o out.jsonl -j 4</code>. Runs many prompts (each its own agent), optional parallelism. Input is <code>.jsonl</code>/<code>.json</code> objects (<code>{prompt, id?, mode?, schema?}</code>) or one prompt per line.</p>
+<p><strong>Variants</strong> — <code>evi variants "prompt" -n 3</code> — N independent takes on one prompt.</p>
+<h2>Tools</h2>
+<p>20+ built-in tools, each gated by a <code>[tools]</code> toggle in <code>config.toml</code> (Web: Settings → Tools): <code>fs</code>, <code>code</code> (<code>run_python</code>, sandboxable), <code>shell</code>, <code>web</code> (search/fetch), <code>image</code> (ComfyUI), <code>vision</code>, <code>memory</code>, <code>pdf</code>, <code>sqlite</code>, <code>index</code> (semantic search), <code>git</code>, <code>ocr</code>, <code>calendar</code>, <code>computer</code>, <code>voice</code>, <code>mcp</code>, <code>subagent</code>, <code>federation</code>. REPL: <code>/tools</code> lists active; <code>/notools</code>, <code>/forcetool &lt;name&gt;</code> per turn.</p>
+<p><strong>Sandboxed code</strong> — <code>[tools] sandbox = true</code> runs <code>run_python</code> under bwrap (Linux) / sandbox-exec (macOS): read-only FS + no network. Falls back gracefully.</p>
+<h2>Permissions &amp; guardrails</h2>
+<p><strong>Permission modes</strong> — <code>[auto] mode = ask|accept_edits|plan|yolo</code> + an <code>auto_approve</code> category list + first-match <code>rules</code> (<code>allow|deny &lt;tool&gt; [arg]</code>). REPL <code>/auto</code>, <code>/plan</code>. <strong>Trusted dirs/domains</strong> auto-approve fs/web under given paths/hosts. <strong>MCP allowlist</strong> (<code>tools.mcp_allow</code>) gates which servers load.</p>
+<p><strong>Content guardrails</strong> — <code>~/.evi/guardrails.toml</code>, three layers: regex (block/redact), <code>[[judge]]</code> (the LLM classifies vs a policy), <code>[[classifier]]</code> (a local HF model, <code>[moderation]</code> extra). <code>evi guardrails list|test</code>. See <a href="configuration.html#guardrails--eviguardrailstoml" target="_blank" rel="noopener">configuration.md</a>.</p>
+<h2>Memory &amp; context</h2>
+<p><strong>Memory</strong> — the <code>memory</code> tool persists notes to <code>~/.evi/memory/</code>; supports <strong>tags</strong>. Auto-recalled into context.</p>
+<p><strong>Context management</strong> — automatic compaction (<code>[llm] compact_*</code>). REPL <code>/context</code> (<code>/ctx</code>) shows a per-bucket breakdown (system/you/assistant/tools); Web: click the usage chip. <code>/compact</code> forces it.</p>
+<p><strong>Predicted outputs</strong> — <code>/predict &lt;text|file&gt;</code> speculative-decoding hint.</p>
+<h2>Sessions</h2>
+<p>Per-day JSONL transcripts (<code>tools.transcripts</code>). <code>evi sessions list|show|resume| fork|continue|handoff</code>; REPL <code>/recent</code>. <strong>Cross-device handoff</strong>: <code>evi sessions handoff</code> → resume on another machine after <code>evi sync</code> (or open <code>/?session=&lt;id&gt;</code>). <strong>Checkpoints/rewind</strong>: <code>evi rewind</code> (Web: rewind dialog) undoes file writes.</p>
+<h2>Skills, commands, styles</h2>
+<p><strong>Slash commands</strong> — built-in <code>/cmd</code> controls plus <code>~/.evi/commands/&lt;name&gt;.md</code> → <code>/name</code> templates (<a href="features-slash-commands.html" target="_blank" rel="noopener">guide</a>). <strong>Skills</strong> — <code>~/.evi/skills/&lt;name&gt;/SKILL.md</code> instruction packets the model loads on demand via <code>invoke_skill</code> (<a href="features-skills.html" target="_blank" rel="noopener">guide</a>). <strong>Output styles</strong> — <code>evi style</code> / <code>[llm] output_style</code> layer a persona onto the system prompt. <strong>Keybindings</strong> — <code>~/.evi/keybindings.toml</code> maps a key to a REPL slash command.</p>
+<h2>Hooks</h2>
+<p><code>~/.evi/hooks.toml</code> — run a <code>command</code> (argv) or POST a <code>url</code> around events. Tool events (<code>before_tool_call</code>/<code>after_tool_call</code>, glob <code>match</code>, <code>veto_on_nonzero</code>) and lifecycle events (<code>user_prompt_submit</code>/<code>before_compact</code>/<code>stop</code>). See <a href="configuration.html#hooks--evihookstoml" target="_blank" rel="noopener">configuration.md</a>.</p>
+<h2>Plugins</h2>
+<p><code>evi plugin add &lt;dir|git-url&gt;</code> installs a bundle under <code>~/.evi/plugins/&lt;name&gt;/</code> that can carry <code>commands/</code>, <code>skills/</code>, <code>hooks.toml</code>, <code>mcp.json</code>, and <code>agents.toml</code> (subagent profiles), all auto-discovered. <strong>Marketplace</strong>: <code>evi plugin search &lt;q&gt;</code> / <code>evi plugin install &lt;name&gt;</code> resolve from <code>~/.evi/marketplace.json</code> + <code>[plugins] index_urls</code>; <code>evi plugin index init|add</code>.</p>
+<h2>Agents &amp; orchestration</h2>
+<p><strong>Subagents</strong> — the <code>delegate</code> tool runs a scoped sub-agent by profile (built-in <code>explore</code>/<code>plan</code> + plugin/user <code>agents.toml</code>); <code>evi agents</code> lists them, <code>evi agents new</code> scaffolds a custom one. <strong>Agent teams</strong> — a shared, claimable task list (<code>evi team new/run</code>): a lead decomposes a goal into dependency-ordered tasks and teammates drain it in parallel (<code>evi/teams.py</code>). <strong>Parallel research</strong> — <code>parallel_research</code> tool fans out read-only explorers. <strong>Workflows</strong> — <code>~/.evi/workflows/&lt;name&gt;.toml</code>, multi-step with parallel blocks + <code>{step}</code>/<code>{var}</code> interpolation; <code>evi workflow new|run</code>. <strong>Dispatch</strong> (Web 🗂) — lists live sessions + runnable workflows. <strong>Federation</strong> — delegate a task to a trusted <strong>peer eVi</strong> (<code>~/.evi/peers.json</code>, <code>delegate_peer</code> tool, <code>[federation] serve</code> to answer). <strong>Code review</strong> — <code>evi review --multi</code> multi-agent review. <strong>Multi-model routing</strong> — <code>evi route</code> picks a model per turn. <strong>Ultracode</strong> — <code>evi ultracode "&lt;task&gt;"</code> / <code>/ultra</code> / <code>/effort ultracode</code> runs one hard task through an exhaustive decompose → fan-out solvers → adversarial verify → synthesize pipeline (<a href="features-ultracode.html" target="_blank" rel="noopener">guide</a>).</p>
+<h2>MCP</h2>
+<p><strong>Client</strong>: <code>~/.evi/mcp.json</code> servers, <code>tools.mcp</code> on; <code>evi mcp list-tools</code>. <strong>Server</strong>: <code>evi mcp serve</code> exposes eVi's tools/memory/commands over stdio+HTTP.</p>
+<h2>Automation</h2>
+<p><strong>Recipes</strong> — <code>evi recipe</code> saved multi-turn flows. <strong>Routines</strong> — webhook → recipe (<code>evi routine</code>, <code>POST /api/routine/{token}</code>). <strong>Scheduled tasks</strong> — <code>evi schedule add --cron … (--prompt | --eval &lt;suite&gt;)</code>; runs on cron, incl. <strong>scheduled evals</strong> for drift watch. <strong>Channels</strong> — push an external alert into a live web session (<code>POST /api/session/{id}/channel</code>).</p>
+<h2>Structured output &amp; evals</h2>
+<p><strong>Structured outputs</strong> — JSON-Schema-constrained replies: REPL <code>/schema &lt;file&gt;</code>, <code>evi run --schema</code>, Web <code>/api/chat output_schema</code>. <strong>Evals</strong> — <code>evi eval new|run</code> runs prompt→assertion suites (contains/regex/equals + <strong>LLM-judge</strong> rubric) with a pass-rate; exits non-zero to gate CI.</p>
+<h2>Voice &amp; vision</h2>
+<p><strong>TTS</strong> — <code>[voice] engine = system|coqui|f5|piper</code>; <code>evi voice speak|engines</code>; Web Settings → Voice; REPL <code>/speak</code> auto-speaks replies. <strong>STT</strong> — <code>evi voice listen</code> (faster-whisper, <code>[stt]</code> extra); always-on <code>AutoListener</code>. <strong>Vision</strong> — attach images (<code>/image</code>, Web 📎) to VLM models. <strong>Image gen</strong> — ComfyUI via the <code>image</code> tool.</p>
+<h2>Web &amp; desktop</h2>
+<p><strong>Settings</strong> — full screen over <code>config.toml</code> (9 sections). <strong>Multi-user</strong> — <code>[web] multi_user</code> + <code>~/.evi/users.json</code>; each user gets an <strong>isolated workspace</strong> (sessions/transcripts/memory under <code>~/.evi/users/&lt;name&gt;/</code>). <strong>Deep links</strong> — <code>evi://session/&lt;id&gt;</code> / <code>evi://workflow/&lt;name&gt;</code>; <code>evi link</code>. <strong>Desktop</strong> — native menus, tray, <strong>silent auto-updater</strong> (with in-app progress), first-run wizard. <strong>Status line</strong> — customizable REPL status (<code>[statusline]</code>).</p>
+<h2>Observability</h2>
+<p><strong>OpenTelemetry</strong> — opt-in traces/metrics around tool calls (<code>[telemetry] traces/metrics</code> + <code>otlp_endpoint</code>, <code>[otel]</code> extra). <strong>Local stats</strong> — <code>evi stats</code> aggregates sessions/tools/tokens from transcripts. <strong>Crash reporting</strong> — opt-in Sentry (<code>[telemetry] crash_reports</code> + <code>dsn</code>, <code>[telemetry]</code> extra).</p>
+<h2>SDK (programmatic)</h2>
+<p><strong>Agent SDK</strong> — <code>evi.sdk</code> is the curated public library surface: <code>build_agent()</code> (the convenience constructor the CLI itself delegates to), the streaming <code>Agent</code></p>
+<ul><li>all event types, <code>@tool</code>, subagents, structured output, <code>run_headless</code>,</li></ul>
+<p>sessions/checkpoints, MCP, ultracode/workflows, and telemetry — all under one stable namespace (<code>py.typed</code>). Guide: <a href="sdk.html" target="_blank" rel="noopener">sdk.md</a>; runnable scripts: <a href="https://github.com/evi-assistant/evi-ai/blob/main/examples/python" target="_blank" rel="noopener">examples/python/</a>.</p>
+<h2>Machine ops</h2>
+<p><strong>Sync</strong> — <code>evi sync push|pull</code> git-syncs portable <code>~/.evi</code> state. <strong>Backup</strong> — <code>evi backup</code>. <strong>Profiles</strong> — <code>evi profile</code> per-machine config overlays. <strong>Worktrees</strong> — <code>evi worktree</code> for parallel work. <strong>Doctor</strong> — <code>evi doctor</code> (Web: Help → Diagnostics). <strong>Fine-tune export</strong> — <code>evi finetune export</code> → JSONL training set.</p>
+<h2>Packaging &amp; release</h2>
+<p>PyPI (<code>v*</code> tag, Trusted Publishing + <strong>sigstore</strong> signing), <strong>Docker</strong> image (<code>docker.yml</code> → GHCR), desktop installers (<code>desktop-v*</code>, 3-OS), a reusable <strong><code>evi-run</code> GitHub Action</strong>, and <strong>CodeQL + gitleaks</strong> security scanning. See <a href="releasing.html" target="_blank" rel="noopener">releasing.md</a>. To build locally in one command (sidecar + Tauri), run <code>scripts/build-desktop.{ps1,sh}</code> — see <a href="self-build.html" target="_blank" rel="noopener">self-build.md</a> for developing/building eVi with eVi (the <code>EVI.md</code> bootstrap).</p>
+    </article>
+    <a class="doc-source" href="https://github.com/evi-assistant/evi-ai/blob/main/docs/features.md">Edit on GitHub ↗</a>
+  </main>
+  <footer class="doc-foot">
+    <a href="index.html">← All documentation</a>
+    <span>eVi — local-first personal AI assistant</span>
+  </footer>
+</body>
+</html>

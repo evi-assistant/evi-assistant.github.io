@@ -1,0 +1,140 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Multi-machine setup — eVi docs</title>
+  <meta name="description" content="How to wire eVi across a workstation, a laptop, and a headless AI server on the same LAN — what most people actually want once they have a &quot;server class&quot; GPU. — eVi documentation." />
+  <link rel="stylesheet" href="../styles.css" />
+  <link rel="stylesheet" href="docs.css" />
+  <link rel="icon" href="../favicon.svg" type="image/svg+xml" />
+</head>
+<body>
+  <header class="nav">
+    <a class="brand" href="../index.html" aria-label="eVi home">
+      <span class="brand-mark">e<span class="brand-accent">Vi</span></span>
+    </a>
+    <nav class="nav-links">
+      <a href="index.html">Docs</a>
+      <a href="../index.html#install">Install</a>
+      <a href="../index.html#download">Download</a>
+      <a class="nav-gh" href="https://github.com/evi-assistant/evi-ai">GitHub ↗</a>
+    </nav>
+  </header>
+  <main class="doc-main">
+    <article class="doc">
+<h1>Multi-machine setup</h1>
+<p>How to wire eVi across a workstation, a laptop, and a headless AI server on the same LAN — what most people actually want once they have a "server class" GPU.</p>
+<h2>The setup</h2>
+<pre><code>                    ┌──────────────────────────────┐
+                    │      AI server (P40 / 24GB)  │
+                    │  Ollama   :11434             │
+                    │  ComfyUI  :8188              │
+                    │  evi web  :8000 (0.0.0.0)    │
+                    └────────────┬─────────────────┘
+                                 │  LAN
+        ┌────────────────────────┼────────────────────────┐
+        │                        │                        │
+   ┌────▼─────┐            ┌─────▼──────┐           ┌─────▼────┐
+   │ Laptop   │            │ Desktop    │           │ Phone /  │
+   │ thin     │            │ thick-and- │           │ Tablet   │
+   │ client   │            │ thin both  │           │ browser  │
+   └──────────┘            └────────────┘           └──────────┘</code></pre>
+<h2>1. AI server (the P40 box)</h2>
+<p>Install Ollama if you haven't. It has the cleanest model-management API and works fine on Pascal-era cards using integer quants:</p>
+<pre><code class="language-bash"># Linux (server)
+curl -fsSL https://ollama.com/install.sh | sh
+ollama pull qwen2.5:32b-instruct-q4_K_M     # ~22 GB, the P40 sweet spot</code></pre>
+<p>Install eVi:</p>
+<pre><code class="language-bash">git clone &lt;repo&gt; /opt/evi &amp;&amp; cd /opt/evi
+python3 -m venv .venv &amp;&amp; source .venv/bin/activate
+pip install -e '.[web,mcp,scheduler]'</code></pre>
+<p>Tell eVi to use Ollama and start the web server bound to your LAN:</p>
+<pre><code class="language-bash">evi models backend ollama                       # auto-bumps base_url to :11434/v1
+evi models use qwen2.5:32b-instruct-q4_K_M
+evi web --host 0.0.0.0 --port 8000              # listens on the LAN</code></pre>
+<p>For "always on", run it as a systemd service:</p>
+<pre><code class="language-ini"># /etc/systemd/system/evi-web.service
+[Unit]
+Description=eVi web UI
+After=network.target
+
+[Service]
+Type=simple
+User=evi
+WorkingDirectory=/opt/evi
+Environment="PATH=/opt/evi/.venv/bin"
+ExecStart=/opt/evi/.venv/bin/evi web --host 0.0.0.0 --port 8000
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target</code></pre>
+<pre><code class="language-bash">sudo systemctl enable --now evi-web</code></pre>
+<p>The scheduler boots automatically inside the FastAPI lifespan; any <code>evi schedule add</code> tasks fire from this machine.</p>
+<h2>2. Desktop (the 16 GB workstation)</h2>
+<p>Same install as the server. Pick a backend you have running locally:</p>
+<pre><code class="language-bash"># Option A: keep using your existing LM Studio install
+evi models backend lmstudio
+evi models recommend                            # confirms 14B fits
+
+# Option B: install Ollama locally for symmetry with the server
+evi models backend ollama
+evi models pull qwen2.5:14b-instruct-q4_K_M
+evi models use qwen2.5:14b-instruct-q4_K_M</code></pre>
+<p>Use the CLI directly (<code>evi chat</code>) or browse to <code>http://localhost:8000/</code> after <code>evi web</code>.</p>
+<p>You can also have <em>this</em> machine talk to the AI server when the desktop isn't doing the heavy lifting:</p>
+<pre><code class="language-bash">evi profile add server --backend openai_compat \
+    --base-url http://ai-server.local:8000/v1 \
+    --model qwen2.5:32b-instruct-q4_K_M
+
+evi --profile server chat</code></pre>
+<h2>3. Laptop (the 940MX thin client)</h2>
+<p>The 940MX is too small to be useful as an LLM host (see the discussion in the model-selector chat for details). Treat it as a pure thin client.</p>
+<p>Install + create two profiles:</p>
+<pre><code class="language-bash">git clone &lt;repo&gt; ~/evi &amp;&amp; cd ~/evi
+python3 -m venv .venv &amp;&amp; .venv/Scripts/activate
+pip install -e .
+
+evi profile add home --backend openai_compat \
+    --base-url http://ai-server.local:8000/v1 \
+    --model qwen2.5:32b-instruct-q4_K_M
+
+evi profile add away --backend lmstudio \
+    --model llama3.2:1b-instruct-q4_K_M</code></pre>
+<p>Use them:</p>
+<pre><code class="language-bash">evi --profile home chat        # at home: full power via the server
+evi --profile away chat        # off-LAN: fall back to a tiny local model</code></pre>
+<h3>Desktop (Tauri) on the laptop</h3>
+<p>The Tauri desktop app can run in <strong>remote mode</strong>, skipping the Python spawn entirely. The webview points at the AI server directly:</p>
+<pre><code class="language-bash">EVI_REMOTE_URL=http://ai-server.local:8000 evi-desktop.exe</code></pre>
+<p>That's the laptop's nicest experience: no Python required for chat, just a webview against your home server.</p>
+<h2>DNS / discovery notes</h2>
+<p>Replace <code>ai-server.local</code> with whatever your network resolves. Options:</p>
+<ul><li><strong>mDNS / Bonjour</strong>: most modern OSes resolve <code>&lt;hostname&gt;.local</code> out of the box.</li><li><strong><code>/etc/hosts</code> or Windows hosts file</strong>: hard-code the LAN IP if mDNS isn't working.</li><li><strong>Tailscale / wireguard</strong>: works off-LAN too. Profile points at the Tailscale magic-DNS hostname, and you're "home" anywhere.</li></ul>
+<p>If you go the Tailscale route, you can drop the <code>--profile away</code> fallback altogether and just always use the server.</p>
+<h2>Security</h2>
+<p><code>evi web --host 0.0.0.0</code> binds to <strong>every</strong> interface. If your AI server is on a network you don't control, you should:</p>
+<ul><li>Bind to a specific interface (<code>--host 10.0.0.5</code>) or only localhost (<code>--host 127.0.0.1</code>) and tunnel via SSH or Tailscale.</li><li>Put it behind a reverse proxy that does auth (nginx + basic auth, or Cloudflare Access).</li><li>Or just keep it on a LAN you trust.</li></ul>
+<p>eVi has no built-in auth on the web UI by design — it assumes a trusted network.</p>
+<h2>Syncing your state across machines (<code>evi sync</code>)</h2>
+<p>The three machines above can share the <em>knowledge</em> that should follow you — memory, skills, profiles, saved commands, routes, the MCP server list, and hooks — via a git remote (any private repo works):</p>
+<pre><code class="language-bash"># On the first machine: point at an (empty) private git repo + push.
+evi sync init git@github.com:you/evi-home.git
+evi sync push
+
+# On each other machine: same remote, then pull to adopt the synced state.
+evi sync init git@github.com:you/evi-home.git
+evi sync pull</code></pre>
+<p>Day to day: <code>evi sync push</code> after you teach eVi something, <code>evi sync pull</code> when you sit down at another machine. <code>evi sync status</code> shows the remote + what's changed.</p>
+<p><strong>What travels:</strong> <code>memory/ skills/ profiles/ commands/ routes.json mcp.json hooks.toml</code>.</p>
+<p><strong>What stays local</strong> (and why): <code>config.toml</code> (backend URLs + secrets differ per machine — your server runs Ollama, your laptop points at it), <code>tokens/</code> (OAuth secrets), <code>models/</code> + <code>indices/</code> (large, and rebuildable), and <code>logs/ images/ screenshots/ uploads/ transcripts/ scheduled/</code> (machine-local). A managed <code>.gitignore</code> enforces this, so even new files default to <em>not</em> synced.</p>
+<blockquote><p>First <code>evi sync pull</code> on a machine adopts the remote state (it force-checks-out the synced paths). Anything you'd created locally under those paths first should be pushed from there before pulling elsewhere.</p></blockquote>
+    </article>
+    <a class="doc-source" href="https://github.com/evi-assistant/evi-ai/blob/main/docs/multi-machine.md">Edit on GitHub ↗</a>
+  </main>
+  <footer class="doc-foot">
+    <a href="index.html">← All documentation</a>
+    <span>eVi — local-first personal AI assistant</span>
+  </footer>
+</body>
+</html>

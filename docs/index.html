@@ -1,0 +1,88 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Documentation — eVi docs</title>
+  <meta name="description" content="eVi documentation index — eVi documentation." />
+  <link rel="stylesheet" href="../styles.css" />
+  <link rel="stylesheet" href="docs.css" />
+  <link rel="icon" href="../favicon.svg" type="image/svg+xml" />
+</head>
+<body>
+  <header class="nav">
+    <a class="brand" href="../index.html" aria-label="eVi home">
+      <span class="brand-mark">e<span class="brand-accent">Vi</span></span>
+    </a>
+    <nav class="nav-links">
+      <a href="index.html">Docs</a>
+      <a href="../index.html#install">Install</a>
+      <a href="../index.html#download">Download</a>
+      <a class="nav-gh" href="https://github.com/evi-assistant/evi-ai">GitHub ↗</a>
+    </nav>
+  </header>
+  <main class="doc-main">
+    <article class="doc">
+      <h1>Documentation</h1>
+      <p class="doc-lede">Everything eVi can do, and how to configure it. These pages
+      are generated from <a href="https://github.com/evi-assistant/evi-ai/tree/main/docs"><code>docs/</code></a> in
+      the repo, and ship inside the app too — Help → Documentation works offline.</p>
+
+      <h2>Start here</h2>
+      <div class="doc-grid">
+      <a class="doc-card" href="features.html"><h3>eVi feature reference</h3><p>A catalog of everything eVi does — what each feature is, how to use it from the CLI / REPL / Web, and where to configure it. Setup-heavy items link to configuration.md; surface cov…</p></a>
+      <a class="doc-card" href="configuration.html"><h3>Configuration</h3><p>All eVi state lives under ~/.evi/ (Windows: %USERPROFILE%\.evi\). The primary file is config.toml. First launch writes a default. Hand-edit it when you need to change something; no…</p></a>
+      <a class="doc-card" href="commands.html"><h3>Slash commands</h3><p>Type / at the start of a message to run a command (in the REPL or the web chat). Built-ins cover the session controls — /help, /model, /effort, /fast, /plan, /auto, /goal, /compact…</p></a>
+      <a class="doc-card" href="tools.html"><h3>Tool reference</h3><p>Every tool eVi ships with, grouped by category. Each tool is enabled via tools.&lt;category&gt; = true in ~/.evi/config.toml. Whether the agent can invoke it *without prompting* depends…</p></a>
+      <a class="doc-card" href="troubleshooting.html"><h3>Troubleshooting</h3><p>Common problems, in roughly the order new users hit them.</p></a>
+      </div>
+
+      <h2>Guides</h2>
+      <div class="doc-grid">
+      <a class="doc-card" href="architecture.html"><h3>Architecture</h3><p>A walk through how eVi&#x27;s pieces fit together. Read this once when you join the project; refer back to the per-module docs when you need detail.</p></a>
+      <a class="doc-card" href="claude-code-comparison.html"><h3>eVi vs Claude Code — feature comparison</h3><p>How eVi&#x27;s capabilities line up against the full Claude Code docs surface (reviewed 2026-06-16, eVi 0.33.0). eVi is local-first, single-user, privacy-first, so a number of Claude Co…</p></a>
+      <a class="doc-card" href="cli-parity.html"><h3>Surface parity — CLI ↔ Web ↔ Desktop</h3><p>eVi has three front-ends over one engine. The CLI is the most complete (it&#x27;s the admin + scripting surface); the Web UI is chat-centric with a full settings screen; the Desktop app…</p></a>
+      <a class="doc-card" href="code-signing.html"><h3>Code signing policy</h3><p>Free code signing provided by SignPath.io, certificate by SignPath Foundation.</p></a>
+      <a class="doc-card" href="desktop-bundling.html"><h3>Desktop bundling</h3><p>How the Tauri desktop app is built, and how to make it a standalone installer that doesn&#x27;t need Python on the target machine.</p></a>
+      <a class="doc-card" href="development.html"><h3>Development notes</h3><p>For people working on eVi itself.</p></a>
+      <a class="doc-card" href="future-integrations.html"><h3>Future integrations — backlog</h3><p>A scratch list of third-party app/service integrations eVi could grow. Nothing here is committed; the point is to capture ideas as they come up so we don&#x27;t lose them. When we pick…</p></a>
+      <a class="doc-card" href="multi-machine.html"><h3>Multi-machine setup</h3><p>How to wire eVi across a workstation, a laptop, and a headless AI server on the same LAN — what most people actually want once they have a &quot;server class&quot; GPU.</p></a>
+      <a class="doc-card" href="releasing.html"><h3>Releasing</h3><p>How to cut a new version of eVi.</p></a>
+      <a class="doc-card" href="roadmap.html"><h3>Roadmap</h3><p>Forward plan for eVi. Shipped work lives in CHANGELOG.md + project memory; this file is what&#x27;s *next* and why. Items carry a rough size (S = an afternoon, M = a day, L = a phase) a…</p></a>
+      <a class="doc-card" href="sdk-coverage.html"><h3>SDK coverage + borrowable features</h3><p>A review of which OpenAI Chat Completions features we&#x27;ve wired up, which are still useful and unbuilt, and what we could borrow from other vendors&#x27; SDKs (Anthropic, Google, Bedrock…</p></a>
+      <a class="doc-card" href="sdk.html"><h3>Agent SDK (`evi.sdk`)</h3><p>eVi is a library first and a CLI/app second. The same primitives the CLI and the web app are built on are importable under one stable namespace — evi.sdk — so you can embed an eVi…</p></a>
+      <a class="doc-card" href="self-build.html"><h3>Self-build — developing and building eVi *with* eVi</h3><p>eVi is meant to maintain itself. It already has everything needed to work on its own source: a coding agent with file/shell/git tools, an isolated permission model, the full test s…</p></a>
+      <a class="doc-card" href="self-update.html"><h3>Self-update design (Phase 29 proposal)</h3><p>evi update lets a user pull a newer eVi version, verify it works, and roll back if it doesn&#x27;t. This doc is the design — none of it is built yet. Once approved, it becomes Phase 29.</p></a>
+      </div>
+
+      <h2>Feature deep-dives</h2>
+      <div class="doc-grid">
+      <a class="doc-card" href="features-agents.html"><h3>Agents &amp; Orchestration</h3><p>eVi is single-user and local-first, but a single linear chat is not always the best shape for a task. Agents &amp; Orchestration is the family of features that let one eVi run *other*…</p></a>
+      <a class="doc-card" href="features-automation.html"><h3>Recipes, Routines, Scheduled tasks, Channels</h3><p>These four features make up eVi&#x27;s automation surface. They let you save reusable workflows, fire them over HTTP, run prompts on a cron schedule, and push outside alerts into a live…</p></a>
+      <a class="doc-card" href="features-evals.html"><h3>Evals &amp; LLM-as-judge</h3><p>Use evals to:</p></a>
+      <a class="doc-card" href="features-guardrails.html"><h3>Content Guardrails</h3><p>Content Guardrails are a lightweight, fully local content-filter layer that sits between you and the model. They let you block or scrub specific content on the way *in* (your messa…</p></a>
+      <a class="doc-card" href="features-hooks.html"><h3>Hooks (tool + lifecycle, command/url)</h3><p>Hooks let you run your own code (or call a webhook) automatically at key moments while eVi works: right before and right after every tool call, and around three lifecycle events in…</p></a>
+      <a class="doc-card" href="features-mcp.html"><h3>MCP (client + serve)</h3><p>MCP (Model Context Protocol) lets eVi connect to other tool-providing programs — and lets other AI apps connect to eVi. eVi plays both roles:</p></a>
+      <a class="doc-card" href="features-memory-context.html"><h3>Memory &amp; Context management</h3><p>eVi has two complementary mechanisms for remembering things across time:</p></a>
+      <a class="doc-card" href="features-observability.html"><h3>Observability (OpenTelemetry, stats, crash reports)</h3><p>eVi gives you three independent ways to see what your assistant is doing — OpenTelemetry traces/metrics for tool calls, local usage stats computed from your transcripts, and opt-in…</p></a>
+      <a class="doc-card" href="features-permissions-and-sandbox.html"><h3>Permissions &amp; Sandbox</h3><p>eVi runs language models locally and lets them call tools — read and write files, run Python, search the web, control the mouse, talk to MCP servers, and more. Permissions decide *…</p></a>
+      <a class="doc-card" href="features-plugins.html"><h3>Plugins &amp; Marketplace</h3><p>A plugin is an installable bundle that extends eVi without touching your own configuration directories. One plugin can ship any mix of:</p></a>
+      <a class="doc-card" href="features-README.html"><h3>eVi feature guides</h3><p>Deep-dive docs for every feature area — overview, how it works, setup, usage (CLI/REPL/Web), and worked examples. For the one-page catalog see ../features.md; for config keys see .…</p></a>
+      <a class="doc-card" href="features-sessions.html"><h3>Sessions, Resume, Handoff, Checkpoints</h3><p>eVi keeps a durable record of your conversations and the file changes it makes, so you can pick up where you left off and undo mistakes.</p></a>
+      <a class="doc-card" href="features-skills.html"><h3>Skills</h3><p>Skills are named markdown instruction packets the model loads on demand. You write the &quot;how&quot; of a task once (a review rubric, a house style, a checklist), and the agent pulls it in…</p></a>
+      <a class="doc-card" href="features-slash-commands.html"><h3>Slash commands</h3><p>Inside a chat you can type /&lt;name&gt; to run a command instead of sending a message. There are two kinds:</p></a>
+      <a class="doc-card" href="features-structured-and-batch.html"><h3>Structured Outputs &amp; Batch</h3><p>Two related features let you treat eVi like a programmable text-to-data tool instead of just a chat assistant:</p></a>
+      <a class="doc-card" href="features-ultracode.html"><h3>Ultracode</h3><p>instead of a single pass: it decomposes the task, fans out several solver agents that attack it from different angles, has an adversarial critic try to break each candidate, then s…</p></a>
+      <a class="doc-card" href="features-voice.html"><h3>Voice (TTS engines, STT, AutoSpeaker)</h3><p>eVi can both speak (text-to-speech, TTS) and listen (speech-to-text, STT) entirely on your own machine. Like the rest of eVi, voice is local-first: the default TTS engine uses what…</p></a>
+      <a class="doc-card" href="features-web-desktop.html"><h3>Web &amp; Desktop (settings, multi-user, deep links, updater)</h3><p>eVi ships the same assistant in three skins: a Typer CLI, a web UI (FastAPI + Server-Sent Events), and a Tauri desktop app that wraps that web UI in a native window with a menu bar…</p></a>
+      </div>
+
+    </article>
+    
+  </main>
+  <footer class="doc-foot">
+    <a href="index.html">← All documentation</a>
+    <span>eVi — local-first personal AI assistant</span>
+  </footer>
+</body>
+</html>

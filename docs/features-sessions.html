@@ -1,0 +1,124 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Sessions, Resume, Handoff, Checkpoints — eVi docs</title>
+  <meta name="description" content="eVi keeps a durable record of your conversations and the file changes it makes, so you can pick up where you left off and undo mistakes. — eVi documentation." />
+  <link rel="stylesheet" href="../styles.css" />
+  <link rel="stylesheet" href="docs.css" />
+  <link rel="icon" href="../favicon.svg" type="image/svg+xml" />
+</head>
+<body>
+  <header class="nav">
+    <a class="brand" href="../index.html" aria-label="eVi home">
+      <span class="brand-mark">e<span class="brand-accent">Vi</span></span>
+    </a>
+    <nav class="nav-links">
+      <a href="index.html">Docs</a>
+      <a href="../index.html#install">Install</a>
+      <a href="../index.html#download">Download</a>
+      <a class="nav-gh" href="https://github.com/evi-assistant/evi-ai">GitHub ↗</a>
+    </nav>
+  </header>
+  <main class="doc-main">
+    <article class="doc">
+<h1>Sessions, Resume, Handoff, Checkpoints</h1>
+<h2>Overview</h2>
+<p>eVi keeps a durable record of your conversations and the file changes it makes, so you can pick up where you left off and undo mistakes.</p>
+<ul><li><strong>Sessions / transcripts</strong> — every chat is written to disk as a JSONL file, one file per session per day. You can list, view, export, and reopen them.</li><li><strong>Resume / continue / fork</strong> — reopen a past session and keep talking in the same file, jump back into the most recent session, or branch a copy into a brand-new session while leaving the original untouched.</li><li><strong>Handoff</strong> — print the exact command + URL to pick a session up on another device after syncing.</li><li><strong>Checkpoints / rewind</strong> — every file eVi writes via its <code>write_file</code> tool is journalled with the file's prior contents, so a bad edit can be rolled back.</li></ul>
+<p>Why you'd use it: nothing is lost when you close the terminal or browser, you can move a conversation between machines, you keep an auditable record of what was said, and you can undo file writes eVi made without reaching for <code>git</code>.</p>
+<h2>How it works</h2>
+<h3>Transcripts</h3>
+<p>When the <code>transcripts</code> tool toggle is on (the default), each turn is appended to:</p>
+<pre><code>~/.evi/transcripts/&lt;YYYY-MM-DD&gt;/&lt;session_id&gt;.jsonl</code></pre>
+<p>Each line is a JSON object for one message (<code>role</code> = <code>user</code> / <code>assistant</code> / <code>tool</code> / <code>system</code>, plus <code>content</code>, a <code>ts</code> timestamp, and — for tool turns — <code>tool_name</code>, or <code>tool_calls</code> on assistant turns). Because writes happen per turn, the on-disk copy is always current as of the last completed turn.</p>
+<p>Listing scans the day directories newest-first and summarizes each file: message count, first user message (the injected <code>[ongoing goal: …]</code> prefix is stripped from the summary), and start/end timestamps derived from the <code>ts</code> fields.</p>
+<p><strong>Resume is a best-effort reconstruction.</strong> eVi rebuilds an in-memory history from the JSONL in order and re-emits user/assistant/tool messages (synthesizing <code>tool_call_id</code>s where the original wasn't logged). It does <strong>not</strong> restore the backend's KV cache (the next message is a fresh prompt to the model) nor transient flags like an active goal or one-shot plan mode — re-set those if you need them.</p>
+<ul><li><strong>resume</strong> and <strong>continue</strong> reuse the same <code>session_id</code>, so new messages append to the <strong>same</strong> transcript file.</li><li><strong>fork</strong> loads the history into a <strong>fresh</strong> agent with a new auto-generated <code>session_id</code>, so the original file is left intact and new turns go to a new file.</li></ul>
+<p>In the web UI, a session id arriving via <code>/?session=&lt;id&gt;</code> is revived from disk on first use: if a transcript for that id exists, its history is loaded into a fresh <code>Agent</code> before the next message.</p>
+<h3>Checkpoints</h3>
+<p>Every <code>write_file</code> operation records the file's <strong>prior</strong> state first, under:</p>
+<pre><code>~/.evi/checkpoints/journal.jsonl     # one entry per write: {seq, ts, path, op, blob?, size?}
+~/.evi/checkpoints/blobs/&lt;sha256&gt;    # prior contents, content-addressed (dedup'd)</code></pre>
+<p>The <code>op</code> is one of:</p>
+<ul><li><code>create</code> — the file didn't exist before, so undo <strong>deletes</strong> it.</li><li><code>modify</code> — prior bytes were saved as a blob, so undo <strong>restores</strong> them.</li><li><code>skip</code> — the file was larger than 5 MiB, so it was <strong>not</strong> snapshotted and cannot be restored.</li></ul>
+<p><code>rewind</code> walks entries with <code>seq &gt;= target</code> newest-first, restoring/deleting each, then trims those entries from the journal — so a second rewind continues further back. Checkpointing is best-effort: a checkpoint failure never blocks the actual write.</p>
+<h2>Setup</h2>
+<p>Config lives in <code>~/.evi/config.toml</code>. Transcripts are controlled by the <code>transcripts</code> key under the <code>[tools]</code> section:</p>
+<pre><code class="language-toml">[tools]
+transcripts = true     # write session JSONL under ~/.evi/transcripts/</code></pre>
+<ul><li><strong>Default:</strong> <code>transcripts = true</code>. If you turn it off, there are no session files to list, show, resume, fork, continue, or hand off.</li><li><strong>No extra pip extras</strong> are required for sessions or checkpoints — they are plain JSONL files in your eVi home.</li><li><strong>eVi home</strong> defaults to <code>~/.evi</code> and can be relocated with the <code>EVI_HOME</code> environment variable; transcripts and checkpoints then live under that directory.</li><li><strong>Checkpoints</strong> have no config toggle of their own — they are recorded automatically whenever eVi uses its <code>write_file</code> tool. Snapshots are capped at 5 MiB per file (larger writes are journalled as <code>skip</code>).</li></ul>
+<p>Relevant paths:</p>
+<table><thead><tr><th>Data</th><th>Path</th></tr></thead><tbody><tr><td>Session transcripts</td><td><code>~/.evi/transcripts/&lt;YYYY-MM-DD&gt;/&lt;session_id&gt;.jsonl</code></td></tr><tr><td>Checkpoint journal</td><td><code>~/.evi/checkpoints/journal.jsonl</code></td></tr><tr><td>Checkpoint blobs</td><td><code>~/.evi/checkpoints/blobs/&lt;sha256&gt;</code></td></tr></tbody></table>
+<h2>Usage</h2>
+<h3>CLI — <code>evi sessions</code></h3>
+<pre><code class="language-text">evi sessions list [--days 7] [--limit 20]    # recent sessions, newest first
+evi sessions show &lt;session_id&gt;               # print the full transcript
+evi sessions export &lt;session_id&gt; [-f md|html|json] [-o PATH]
+evi sessions resume &lt;session_id&gt;             # reopen and continue in the SAME file
+evi sessions continue                        # resume the most recently active session
+evi sessions fork &lt;session_id&gt;               # branch into a NEW session, original intact
+evi sessions handoff [session_id]            # print resume cmd + URL for another device
+evi sessions title &lt;session_id&gt;              # LLM-generated short title for a session</code></pre>
+<ul><li><code>list</code> defaults to the last <strong>7</strong> days and <strong>20</strong> entries; <code>export</code> defaults to <code>md</code> and prints to stdout unless you pass <code>--out/-o</code>.</li><li><code>handoff</code> defaults to the most recent session when no id is given.</li></ul>
+<h3>CLI — <code>evi rewind</code> (checkpoints)</h3>
+<pre><code class="language-text">evi rewind --list        # (or -l) list recent file checkpoints with their seq numbers
+evi rewind               # undo just the latest write
+evi rewind &lt;seq&gt;         # undo all writes with seq &gt;= &lt;seq&gt;</code></pre>
+<p><code>rewind</code> with no seq (or <code>0</code>) undoes only the most recent write.</p>
+<h3>REPL slash command</h3>
+<p>Inside an interactive chat (<code>evi chat</code>), <code>/recent [n]</code> lists recent sessions (read-only; default 8, scans the last 30 days). It prints short ids and reminds you to resume with <code>evi sessions resume &lt;id&gt;</code> after <code>/exit</code>, or via the <code>evi link &lt;id&gt;</code> deep link.</p>
+<h3>Web UI</h3>
+<ul><li>Open a specific session directly with <code>/?session=&lt;session_id&gt;</code> (the desktop app also handles the <code>evi://session/&lt;id&gt;</code> deep link). Its history is revived from the on-disk transcript.</li><li>The web chat surfaces a <strong>rewind</strong> dialog to undo file writes (the browser equivalent of <code>evi rewind</code>).</li></ul>
+<h2>Examples</h2>
+<h3>Example 1 — list, peek, resume, and hand off to a laptop</h3>
+<pre><code class="language-console">$ evi sessions list --days 14 --limit 5
+a1b2c3d4  2026-06-08 21:14   17 msgs  refactor the auth middleware
+9f8e7d6c  2026-06-07 09:02    6 msgs  draft a release note for v0.31.0
+
+$ evi sessions show a1b2c3d4 | head            # inspect before reopening
+
+$ evi sessions resume a1b2c3d4
+resumed a1b2c3d4 (16 messages restored)
+&gt; …continue the conversation here; new turns append to the same file…</code></pre>
+<p>To continue it later on another machine:</p>
+<pre><code class="language-console">$ evi sessions handoff a1b2c3d4
+handoff a1b2c3d4 (17 messages)
+  1. sync this device:   evi sync push
+  2. on the other device: evi sync pull, then either
+       evi sessions resume a1b2c3d4
+       or open http:///?session=a1b2c3d4 in the web UI</code></pre>
+<p>Run <code>evi sync push</code> here, <code>evi sync pull</code> on the other device, then either resume command works because the transcript file travels with the sync.</p>
+<h3>Example 2 — fork a session, export it, then undo a bad file write</h3>
+<p>Branch a copy so the original stays clean, and save a readable archive:</p>
+<pre><code class="language-console">$ evi sessions fork a1b2c3d4
+forked a1b2c3d4 → new session b7c8d9e0 (16 messages copied)
+
+$ evi sessions export a1b2c3d4 --format md --out ~/notes/auth-chat.md
+wrote /home/you/notes/auth-chat.md</code></pre>
+<p>If eVi made a file edit you want to undo:</p>
+<pre><code class="language-console">$ evi rewind --list
+     7 21:40:11 modify /home/you/project/app.py
+     8 21:41:02 create /home/you/project/new_helper.py
+
+$ evi rewind 7        # undo seq 7 and everything after it (7 and 8)
+✓ deleted (was newly created) — /home/you/project/new_helper.py
+✓ restored — /home/you/project/app.py</code></pre>
+<p><code>evi rewind</code> alone would have undone only seq 8; passing <code>7</code> rolls back from that point onward.</p>
+<h3>Example 3 — make sure transcripts are enabled</h3>
+<p>If <code>evi sessions list</code> says no sessions are found, confirm the toggle:</p>
+<pre><code class="language-toml"># ~/.evi/config.toml
+[tools]
+transcripts = true</code></pre>
+<h2>Notes / limits</h2>
+<ul><li><strong>Resume is not perfect.</strong> The KV cache is not restored (the next prompt is fresh), and transient flags like an active goal or one-shot plan mode are dropped — re-set them if needed. Tool-call ids are synthesized on resume when the original wasn't logged.</li><li><strong>Transcripts must be on.</strong> With <code>transcripts = false</code> there is nothing to list, show, resume, fork, continue, or hand off. The CLI hints at this when the list is empty.</li><li><strong>resume/continue write back to the original file; fork does not.</strong> Use <code>fork</code> when you want to explore a branch without altering the source session.</li><li><strong>Handoff relies on sync.</strong> The on-disk copy is only as current as the last completed turn, and the other device only sees it after <code>evi sync pull</code>. Always <code>evi sync push</code> from the source first.</li><li><strong>Checkpoints are best-effort and fail-open.</strong> A checkpoint failure never blocks the actual write — so in rare cases a write may not be undoable.</li><li><strong>5 MiB snapshot cap.</strong> Writes over 5 MiB are journalled as <code>skip</code> and <strong>cannot</strong> be rewound (the listing shows them, but rewind reports "could not restore (not snapshotted)").</li><li><strong>Rewind is destructive and not itself undoable.</strong> It overwrites current file contents with the saved prior bytes (or deletes newly created files) and trims the journal, so undone entries are gone; there is no "redo."</li><li><strong>Scope of checkpoints.</strong> Only files eVi writes through its own <code>write_file</code> tool are journalled — edits you make by hand, or changes from shell commands, are not captured here. Use git for general version control.</li><li><strong>Privacy.</strong> Transcripts and checkpoint blobs are plain files under your eVi home (<code>~/.evi</code>, or <code>$EVI_HOME</code>). They contain your full conversation text and prior file contents in the clear; treat that directory as sensitive, and remember that <code>export</code> (md/html/json) produces an unencrypted copy wherever you write it.</li></ul>
+    </article>
+    <a class="doc-source" href="https://github.com/evi-assistant/evi-ai/blob/main/docs/features/sessions.md">Edit on GitHub ↗</a>
+  </main>
+  <footer class="doc-foot">
+    <a href="index.html">← All documentation</a>
+    <span>eVi — local-first personal AI assistant</span>
+  </footer>
+</body>
+</html>

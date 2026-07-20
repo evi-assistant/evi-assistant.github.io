@@ -1,0 +1,141 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Development notes — eVi docs</title>
+  <meta name="description" content="For people working on eVi itself. — eVi documentation." />
+  <link rel="stylesheet" href="../styles.css" />
+  <link rel="stylesheet" href="docs.css" />
+  <link rel="icon" href="../favicon.svg" type="image/svg+xml" />
+</head>
+<body>
+  <header class="nav">
+    <a class="brand" href="../index.html" aria-label="eVi home">
+      <span class="brand-mark">e<span class="brand-accent">Vi</span></span>
+    </a>
+    <nav class="nav-links">
+      <a href="index.html">Docs</a>
+      <a href="../index.html#install">Install</a>
+      <a href="../index.html#download">Download</a>
+      <a class="nav-gh" href="https://github.com/evi-assistant/evi-ai">GitHub ↗</a>
+    </nav>
+  </header>
+  <main class="doc-main">
+    <article class="doc">
+<h1>Development notes</h1>
+<p>For people working on eVi itself.</p>
+<h2>Setting up</h2>
+<pre><code class="language-bash">python -m venv .venv
+.venv\Scripts\Activate.ps1            # Windows PowerShell
+# source .venv/bin/activate            # Linux / macOS
+pip install -e '.[dev,web,mcp,scheduler,downloads,web-tools,stt,computer]'</code></pre>
+<p>The <code>stt</code> and <code>computer</code> extras pull native deps (PortAudio for sounddevice, screen capture libs for pyautogui). If you're not actively touching those areas, skip them.</p>
+<h2>Test suite</h2>
+<pre><code class="language-bash">pytest -q                         # ~12 s, 183 tests
+pytest -q tests/test_agent.py     # one file
+pytest -q -k "permission"         # by keyword
+pytest --timeout=15               # ceiling per test</code></pre>
+<p>The suite avoids network calls and external processes by:</p>
+<ul><li>Stubbing the OpenAI client with hand-rolled <code>_FakeClient</code> chunks (see <code>tests/test_agent.py</code>).</li><li>Patching <code>httpx</code> with <code>MockTransport</code> for backend HTTP boundaries (<code>tests/test_backends.py</code>, <code>tests/test_websearch.py</code>, <code>tests/test_image_comfy.py</code>).</li><li>Spawning real <code>git</code> for worktree tests, but they're skipped when <code>git</code> isn't on PATH.</li><li>Stubbing the MCP <code>ClientSession</code> for hook-running and bridge tests.</li></ul>
+<h2>Linting</h2>
+<pre><code class="language-bash">ruff check evi apps tests
+ruff format evi apps tests        # if you want formatter behavior too</code></pre>
+<p><code>pyproject.toml</code> sets <code>line-length = 100, target-version = "py311"</code>.</p>
+<h2>Project layout</h2>
+<pre><code>evi/                core library — no IO at import time
+  agent.py           Agent class + Event types
+  backends/          LM Studio / Ollama / llama.cpp / OpenAI-compat
+  commands.py        ~/.evi/commands/ loader
+  config.py          Config dataclasses + load/save + dir constants
+  dream.py           memory consolidation engine
+  downloads.py       HF GGUF puller
+  hardware.py        NVIDIA + RAM detection
+  hooks.py           hook config loader + runner
+  llm/
+    agent.py         re-exports from evi.agent (or holds the loop)
+    client.py        make_client(settings) → OpenAI SDK
+    subagent.py      run_subagent() + SUBAGENT_PROFILES dict
+  mcp/
+    bridge.py        async-to-sync bridge thread
+    manager.py       MCPManager — boots stdio servers, registers tools
+    servers.py       MCPServer dataclass + JSON loader
+  memory.py          MemoryStore with .attic/ soft-delete
+  profiles.py        partial TOML overlay merge
+  project.py         find_project_file → ProjectContext
+  recommend.py       tiered model picks per VRAM
+  scheduled.py       ScheduledTask + TaskStore
+  scheduler.py       Scheduler — APScheduler wrapper
+  skills.py          SkillStore + minimal frontmatter parser
+  tools/
+    base.py          @tool decorator + REGISTRY + Tool dataclass
+    code.py          run_python tool (subprocess)
+    computer.py      pyautogui wrappers — screenshot/click/type/key/scroll
+    fs.py            read_file/write_file/list_dir
+    image_comfy.py   ComfyUI text2img
+    memory.py        remember/recall/forget/list_memories
+    skills.py        list_skills/invoke_skill
+    subagent.py      delegate_explore/delegate_plan
+    voice.py         speak_text/transcribe_microphone
+    websearch.py     web_search/web_fetch
+  transcripts.py     JSONL session log store
+  util/streaming.py  legacy
+  voice.py           TTS (platform CLIs) + STT (faster-whisper)
+  worktree.py        git worktree wrapper
+  apps/              frontends (shipped in the wheel)
+    cli/main.py      Typer CLI — every public command
+    web/server.py    FastAPI + SSE + permission flow
+    web/static/      vanilla JS chat UI
+desktop/             Tauri 2 project (NOT a Python package)
+tests/               pytest — one file per module
+docs/                this folder
+scripts/             install + dev helpers</code></pre>
+<h2>Adding a tool</h2>
+<ol><li>Create <code>evi/tools/&lt;thing&gt;.py</code>:</li></ol>
+<pre><code class="language-python">   from evi.tools.base import tool
+
+   @tool(
+       description="What this tool does for the model.",
+       category="thing",  # also: the config toggle name
+   )
+   def the_tool(arg1: str, arg2: int = 5) -&gt; str:
+       ...
+       return "result"</code></pre>
+<ol><li>Add the category to <code>ToolToggles</code> in <code>evi/config.py</code>.</li><li>Import for side effect in:<ul><li><code>evi/apps/cli/main.py</code></li><li><code>evi/apps/web/server.py</code></li></ul></li><li>Decide whether the category belongs in <code>auto.auto_approve</code>. If it does anything irreversible or network-y, leave it out.</li><li>Test pattern:</li></ol>
+<pre><code class="language-python">   from evi.tools.base import REGISTRY
+   import evi.tools.thing  # noqa: F401  register
+
+   def test_the_tool() -&gt; None:
+       out = REGISTRY["the_tool"].call(json.dumps({"arg1": "x"}))
+       assert ...</code></pre>
+<h2>Adding a backend</h2>
+<p><code>evi/backends/__init__.py</code> registers backends in <code>KNOWN_BACKENDS</code>. Each subclass of <code>Backend</code>:</p>
+<ul><li><code>name: str</code> class attribute</li><li><code>__init__(base_url, api_key, request_timeout)</code> constructor</li><li><code>make_client() -&gt; OpenAI</code> — required</li><li>Override `list_models / model_info / pull_model / delete_model / supports_pull` as makes sense for the backend.</li></ul>
+<p>Add a default port to <code>_DEFAULT_URLS</code> in <code>factory.py</code>. Add tests in <code>tests/test_backends.py</code> (use <code>httpx.MockTransport</code>).</p>
+<h2>Adding a slash command</h2>
+<p>Built-in commands live in <code>evi/apps/cli/main.py</code> and <code>evi/apps/web/server.py</code>. The two paths are intentionally separate:</p>
+<ul><li>CLI: <code>_handle_&lt;name&gt;(agent, args, cmd_store) -&gt; SlashResult</code>. Register in the <code>_BUILTINS</code> dict.</li><li>Web: <code>_handle_slash</code> is one switch statement returning <code>_SlashOutcome</code>. Mirror your CLI handler there.</li></ul>
+<p>User-defined commands need no code — they're just markdown files in <code>~/.evi/commands/</code>.</p>
+<h2>Adding a subagent profile</h2>
+<p>Add an entry to <code>SUBAGENT_PROFILES</code> in <code>evi/llm/subagent.py</code>:</p>
+<pre><code class="language-python">SUBAGENT_PROFILES["reviewer"] = {
+    "system_prompt": "You review pull requests for correctness…",
+    "tool_categories": ("fs",),
+}</code></pre>
+<p>Then add a delegate tool in <code>evi/tools/subagent.py</code> that wraps <code>run_subagent(...)</code> with that profile.</p>
+<h2>Common gotchas</h2>
+<ul><li><strong>Agent.history vs transcripts</strong>: <code>history</code> is in-process, dies with the Agent. Transcripts are append-only JSONL on disk. Don't conflate them.</li><li><strong>Tool registration is import-side-effect-driven</strong>. Forgetting to import the module in the CLI / web entry points means the tool won't appear in REGISTRY. The same module imported via tests works because the test imports it.</li><li><strong><code>config.py</code> constants</strong>: Lots of <code>~/.evi/&lt;thing&gt;</code> paths live there. Always import the constant, never hard-code `Path.home() / ".evi" / ...`.</li><li><strong>Test isolation</strong>: Several modules cache state at module level (<code>memory_tools._store</code>, <code>voice_mod._WHISPER_MODEL</code>). Tests that monkeypatch their roots must do so via the module attribute, not the globals.</li><li><strong>MCP bridge ownership</strong>: <code>MCPManager</code> constructs its own bridge by default. If you pass one in (tests do), <code>manager.stop()</code> doesn't stop the bridge — the caller is responsible.</li></ul>
+<h2>Bumping a phase</h2>
+<p>When you add a meaningful chunk of work:</p>
+<ol><li>Add tests covering the new code paths.</li><li>Update <code>README.md</code> "What's built" table.</li><li>Update <code>docs/architecture.md</code> if you added a new subsystem.</li><li>Add a memory entry in <code>~/.claude/projects/C--evi/memory/project_evi.md</code> so the next Claude Code session knows what changed.</li></ol>
+<h2>Releasing</h2>
+<p>Nothing automated yet. Planned: <code>scripts/release.sh</code> that runs <code>pytest &amp;&amp; ruff check &amp;&amp; python -m build</code>, tags the commit, attaches wheels.</p>
+    </article>
+    <a class="doc-source" href="https://github.com/evi-assistant/evi-ai/blob/main/docs/development.md">Edit on GitHub ↗</a>
+  </main>
+  <footer class="doc-foot">
+    <a href="index.html">← All documentation</a>
+    <span>eVi — local-first personal AI assistant</span>
+  </footer>
+</body>
+</html>

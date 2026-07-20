@@ -1,0 +1,138 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Permissions &amp; Sandbox — eVi docs</title>
+  <meta name="description" content="eVi runs language models locally and lets them call tools — read and write files, run Python, search the web, control the mouse, talk to MCP servers, and more. Permissions decide *… — eVi documentation." />
+  <link rel="stylesheet" href="../styles.css" />
+  <link rel="stylesheet" href="docs.css" />
+  <link rel="icon" href="../favicon.svg" type="image/svg+xml" />
+</head>
+<body>
+  <header class="nav">
+    <a class="brand" href="../index.html" aria-label="eVi home">
+      <span class="brand-mark">e<span class="brand-accent">Vi</span></span>
+    </a>
+    <nav class="nav-links">
+      <a href="index.html">Docs</a>
+      <a href="../index.html#install">Install</a>
+      <a href="../index.html#download">Download</a>
+      <a class="nav-gh" href="https://github.com/evi-assistant/evi-ai">GitHub ↗</a>
+    </nav>
+  </header>
+  <main class="doc-main">
+    <article class="doc">
+<h1>Permissions &amp; Sandbox</h1>
+<h2>Overview</h2>
+<p>eVi runs language models locally and lets them call <strong>tools</strong> — read and write files, run Python, search the web, control the mouse, talk to MCP servers, and more. Permissions decide <em>which</em> of those calls happen automatically, which get blocked, and which pause to ask you first. The <strong>sandbox</strong> is a separate, defence-in-depth layer that confines the one tool that runs arbitrary code (<code>run_python</code>) to a read-only filesystem with no network.</p>
+<p>You'd use these features to:</p>
+<ul><li>Let trusted, low-risk tools (reading files, recalling memory) run silently while risky ones (shell, deleting things, network calls) still prompt.</li><li>Hard-block specific dangerous calls regardless of mode (e.g. <code>rm</code> in shell).</li><li>Pre-approve only files under a project directory, or web fetches to a domain you trust, without opening up a whole tool category.</li><li>Switch a whole session to "read-only planning" or "approve everything" on the fly.</li><li>Run model-generated Python under OS isolation so a buggy or hostile snippet can't touch the rest of your disk or phone home.</li></ul>
+<p>Everything is local and single-user. There is no remote policy server; the policy is the <code>[auto]</code> and <code>[tools]</code> sections of your <code>~/.evi/config.toml</code>.</p>
+<h2>How it works</h2>
+<h3>The permission decision</h3>
+<p>Every time the model requests a tool call, eVi resolves it to exactly one of <strong>allow</strong>, <strong>deny</strong>, or <strong>ask</strong>. The logic lives in <code>evi/permissions.py</code> (<code>decide()</code>), called by the agent before any tool runs. It evaluates layers in this order:</p>
+<ol><li><strong>Hard-deny</strong> (<code>auto.hard_deny</code>). Evaluated **before everything — even <code>yolo</code> and any <code>allow</code> rule.** A list of <code>[deny] &lt;tool-glob&gt; [arg-glob]</code> strings; if one matches, the call is <strong>denied</strong>, full stop. Use for calls that must never run regardless of mode (e.g. <code>hard_deny = ["shell rm -rf*"]</code>).</li><li><strong>Mode</strong> (<code>auto.mode</code>). Checked next and can short-circuit the rest:<ul><li><code>yolo</code> → <strong>allow</strong> every call (but hard-deny above still blocks).</li><li><code>plan</code> → <strong>deny</strong> every call (read-only planning; the model can think but not act).</li><li><code>accept_edits</code> and <code>ask</code> fall through to the lower layers.</li></ul></li><li><strong>Rules</strong> (<code>auto.rules</code>). A <strong>first-match</strong> allow/deny list. Each rule is a string <code>&lt;allow|deny&gt; &lt;tool-glob&gt; [arg-glob]</code>. The tool glob is matched against the tool name (<code>fnmatch</code>); the optional arg glob is matched against the call's string-valued arguments. The first rule that matches wins — <strong>so an explicit <code>deny</code> here beats trusted dirs/domains below.</strong><ul><li><strong>Protected paths</strong> (<code>auto.protected_paths</code>). Before any <em>implicit</em> allow below, an <code>fs</code>/<code>code</code> write whose path matches a protected pattern (fnmatch on the path or its basename) is forced to <strong>ask</strong> — so <code>accept_edits</code> / auto-approve / trusted-dirs never silently write a secret or code-executing file. Defaults cover <code>.env</code>, <code>.npmrc</code>, <code>.gitconfig</code>, <code>.pypirc</code>, shell rc files, <code>*.pem</code>, SSH keys. An explicit <code>allow</code> rule (step 2) still wins, honouring your intent.</li></ul></li><li><strong><code>accept_edits</code> mode shortcut.</strong> If the mode is <code>accept_edits</code> and the tool's category is <code>fs</code> or <code>code</code>, the call is <strong>allowed</strong>.</li><li><strong>Auto-approve categories</strong> (<code>auto.auto_approve</code>). If the tool's category is in this list, it's <strong>allowed</strong> without prompting.</li><li><strong>Trusted scopes.</strong> For <code>fs</code>/<code>code</code> tools whose path arguments resolve to somewhere under a <code>trusted_dirs</code> entry → <strong>allow</strong>. For <code>web</code> tools whose URL host matches a <code>trusted_domains</code> entry (exact host or any subdomain) → <strong>allow</strong>.</li><li><strong>Otherwise → ask.</strong> eVi prompts you (in the CLI/REPL or web UI). If there is no UI able to prompt — e.g. the headless scheduler, a federation request, or a workflow step — an unattended agent <strong>default-denies</strong> anything not pre-approved.</li></ol>
+<p>The REPL <code>/auto on</code> toggle is a session override that sits <em>above</em> all of this: it forces every call to <strong>allow</strong> for the rest of the session, until you <code>/auto off</code>.</p>
+<h3>The sandbox</h3>
+<p>The sandbox (<code>evi/sandbox.py</code>) wraps the <code>run_python</code> subprocess so it runs with the filesystem read-only except a throwaway temp work directory, and (by default) no network:</p>
+<ul><li><strong>Linux</strong> — <code>bwrap</code> (bubblewrap): <code>--ro-bind / /</code> plus a writable bind for the work dir, plus <code>--unshare-net</code> to cut the network.</li><li><strong>macOS</strong> — <code>sandbox-exec</code> with a generated SBPL profile that denies <code>file-write*</code> outside <code>/tmp</code> and the work dir, and denies network.</li><li><strong>Windows / no sandboxer on PATH</strong> — <strong>not available.</strong> The wrapper returns the command unchanged, so the snippet runs <em>unsandboxed</em> and <code>run_python</code> prepends a note saying so.</li></ul>
+<p>The sandbox only confines <code>run_python</code>. It is not the same thing as the permission policy — a call can be permitted and still be sandboxed, or permitted and unsandboxed.</p>
+<h2>Setup</h2>
+<p>All configuration lives in <code>~/.evi/config.toml</code> (Windows: <code>%USERPROFILE%\.evi\config.toml</code>). First launch writes defaults; hand-edit the file, then restart or run <code>/reload</code> in the REPL.</p>
+<h3><code>[auto]</code> — the permission policy</h3>
+<pre><code class="language-toml">[auto]
+mode            = "ask"                              # ask | accept_edits | plan | yolo
+auto_approve    = ["fs", "code", "memory", "skills", "image"]
+rules           = []                                 # first-match "allow|deny &lt;tool&gt; [arg]"
+trusted_dirs    = []                                 # auto-approve fs/code under these paths
+trusted_domains = []                                 # auto-approve web fetches to these hosts</code></pre>
+<table><thead><tr><th>Key</th><th>Default</th><th>Meaning</th></tr></thead><tbody><tr><td><code>mode</code></td><td><code>"ask"</code></td><td>Top-level policy. <code>ask</code> prompts for anything not pre-approved; <code>accept_edits</code> auto-allows <code>fs</code>/<code>code</code>; <code>plan</code> denies all tools; <code>yolo</code> allows all tools.</td></tr><tr><td><code>auto_approve</code></td><td><code>["fs","code","memory","skills","image"]</code></td><td>Tool <strong>categories</strong> that run without prompting. Note <code>shell</code>, <code>subagent</code>, <code>computer</code>, <code>web</code> are deliberately <strong>not</strong> here.</td></tr><tr><td><code>rules</code></td><td><code>[]</code></td><td>First-match allow/deny list; explicit <code>deny</code> overrides trusted dirs/domains.</td></tr><tr><td><code>trusted_dirs</code></td><td><code>[]</code></td><td>Paths whose <code>fs</code>/<code>code</code> calls are auto-approved (resolved, <code>~</code> expanded, sub-paths included).</td></tr><tr><td><code>trusted_domains</code></td><td><code>[]</code></td><td>Hosts whose <code>web</code> fetches are auto-approved (exact host or subdomain).</td></tr></tbody></table>
+<p>Valid modes are exactly <code>ask</code>, <code>accept_edits</code>, <code>plan</code>, <code>yolo</code>.</p>
+<h3><code>[tools]</code> — the sandbox toggle (and tool categories)</h3>
+<p>Tools are grouped into categories that the permission policy reasons about. The sandbox is one toggle here:</p>
+<pre><code class="language-toml">[tools]
+fs       = true     # read_file / write_file / list_dir          (category: fs)
+code     = true     # run_python                                  (category: code)
+shell    = false    # not auto-approved by default
+web      = false    # web_search / web_fetch — network, opt in
+computer = false    # mouse/keyboard control — never default-on
+# ... other categories: memory, skills, image, subagent, mcp, voice,
+#     transcripts, pdf, sqlite, index, git, federation, ocr, calendar ...
+
+sandbox  = false    # run_python under an OS sandbox where available</code></pre>
+<p>Set <code>sandbox = true</code> to run <code>run_python</code> under <code>bwrap</code>/<code>sandbox-exec</code>. There are <strong>no pip extras required</strong> for the sandbox itself, but the OS launcher must be present:</p>
+<ul><li>Linux: install bubblewrap (e.g. <code>apt install bubblewrap</code>) so <code>bwrap</code> is on <code>PATH</code>.</li><li>macOS: <code>sandbox-exec</code> ships with the OS.</li><li>Windows: no sandboxer exists — <code>sandbox = true</code> is honored as "requested" but falls back to running unsandboxed with a printed note.</li></ul>
+<h3>Where it can't prompt</h3>
+<p>Headless contexts (the scheduler, <code>evi web</code> background runs, federation <code>/api/federate</code>, and workflow steps) attach a deny-only permission callback: anything not pre-approved via <code>auto_approve</code>/<code>rules</code>/<code>mode</code>/trusted scopes is <strong>denied</strong>, never blocked waiting on a human.</p>
+<h2>Usage</h2>
+<h3>REPL slash commands (<code>evi chat</code>)</h3>
+<table><thead><tr><th>Command</th><th>Effect</th></tr></thead><tbody><tr><td><code>/plan</code></td><td>The <strong>next</strong> turn runs plan-only (no tools). Type your task after it, or pass it inline: <code>/plan outline a refactor</code>.</td></tr><tr><td><code>/auto on</code></td><td>Approve every tool call for the rest of this session.</td></tr><tr><td><code>/auto off</code></td><td>Return to config defaults (<code>mode</code> + <code>auto_approve</code> + <code>rules</code>).</td></tr><tr><td><code>/auto</code></td><td>Show whether auto-all is ON/OFF and list the always-allowed categories.</td></tr><tr><td><code>/tools</code></td><td>List the currently active tools (so you can see what's callable).</td></tr><tr><td><code>/reload</code></td><td>Re-read <code>config.toml</code> (pick up edits to <code>[auto]</code>/<code>[tools]</code>) without restarting.</td></tr></tbody></table>
+<p>When a call needs a decision, the CLI prints a prompt like:</p>
+<pre><code>permission: write_file (fs) args={"path": "/etc/hosts", ...}
+  approve? y/n/a (allow all this session):</code></pre>
+<p>Press <code>y</code> to allow once, <code>n</code> (or just Enter) to deny, <code>a</code> to flip on allow-all for the session. When the model batches several calls in one turn, eVi prompts once for the whole batch and you can answer <code>a</code> (all), <code>n</code> (none), specific 1-based indices like <code>1,3</code>, or <code>s</code> (allow all this session).</p>
+<h3>Setting the policy</h3>
+<p>There is no dedicated <code>evi config set</code> for these keys — edit <code>config.toml</code> directly. <code>evi config show</code> prints the resolved config (including any profile or per-project overlay), and <code>evi config path</code> prints the file location. After editing, use <code>/reload</code> in the REPL or restart.</p>
+<h3>Web UI</h3>
+<p>The web frontend prompts for each non-pre-approved tool call inline in the chat stream (approve/deny per call), honoring the same <code>[auto]</code> policy. The diagnostics endpoint reports the live sandbox state — <code>{enabled, platform, launcher, available}</code> — which the desktop/web settings surface so you can see whether a sandboxer is actually present on this machine.</p>
+<h3>Per-project and per-profile overrides</h3>
+<p>Because <code>[auto]</code> and <code>[tools]</code> are ordinary config sections, a profile (<code>~/.evi/profiles/&lt;name&gt;.toml</code>, via <code>--profile</code>/<code>EVI_PROFILE</code>) or a per-project <code>.evi.toml</code> (walked up from the working directory) can override them. A repo can thus pin a stricter <code>mode</code> or a <code>deny</code> rule for everyone who works in it.</p>
+<h2>Examples</h2>
+<h3>Example 1 — Lock down shell, trust a project, trust a docs domain</h3>
+<p>A policy that: keeps the safe defaults, allows the <code>web</code> and <code>git</code> categories, hard-blocks destructive shell commands, and auto-approves file edits anywhere under one project plus web fetches to a docs site.</p>
+<pre><code class="language-toml"># ~/.evi/config.toml
+
+[tools]
+fs    = true
+code  = true
+shell = true      # enable shell tools, but gate them with rules below
+web   = true
+git   = true
+
+[auto]
+mode         = "ask"
+auto_approve = ["fs", "code", "memory", "skills", "image", "git"]
+rules = [
+  "deny shell rm*",          # block any shell call whose arg starts with "rm"
+  "deny shell *sudo*",       # ...or mentions sudo
+  "deny fs *.env",           # never touch dotenv files, even under trusted_dirs
+  "allow web",               # allow the whole web category without prompting
+]
+trusted_dirs    = ["~/projects/eVi"]
+trusted_domains = ["docs.python.org"]</code></pre>
+<p>Because rules are first-match and sit <strong>above</strong> trusted scopes, the <code>deny fs *.env</code> rule still blocks a <code>write_file</code> to <code>~/projects/eVi/.env</code> even though that path is under a trusted dir.</p>
+<h3>Example 2 — Run model-generated Python in a sandbox (Linux)</h3>
+<p>Turn on the sandbox and confirm a snippet really is confined:</p>
+<pre><code class="language-toml"># ~/.evi/config.toml
+[tools]
+code    = true
+sandbox = true</code></pre>
+<pre><code class="language-bash"># Make sure the Linux sandboxer is installed
+sudo apt install bubblewrap     # provides `bwrap`
+which bwrap                      # -&gt; /usr/bin/bwrap
+
+evi chat</code></pre>
+<p>In the REPL, ask the model to run code that tries to write outside its work dir and to reach the network — both should fail under the sandbox:</p>
+<pre><code class="language-text">you&gt; run this python: open('/etc/evi-probe','w').write('x'); import urllib.request as u; u.urlopen('https://example.com')</code></pre>
+<p>With <code>bwrap</code> present, the filesystem is read-only outside the temp work dir and <code>--unshare-net</code> removes networking, so the write and the fetch both error out. On Windows (or any machine with no sandboxer on <code>PATH</code>), the same call runs <strong>unsandboxed</strong> and <code>run_python</code> prefixes its output with:</p>
+<pre><code class="language-text">(sandbox requested but no sandboxer on PATH — ran unsandboxed)</code></pre>
+<h3>Example 3 — Read-only planning for one turn</h3>
+<p>Use <code>/plan</code> to let the model reason about a change without it touching anything:</p>
+<pre><code class="language-text">you&gt; /plan
+plan-only mode enabled for the next turn. Type your task.
+you&gt; review my repo layout and propose where a new auth module should live</code></pre>
+<p>That single turn runs with all tools denied (<code>mode = "plan"</code> semantics for the turn), so the model produces a plan rather than editing files. The following turn returns to your normal policy.</p>
+<h2>Notes / limits</h2>
+<ul><li><strong>Fail-open sandbox.</strong> If <code>sandbox = true</code> but no sandboxer is on <code>PATH</code> (always the case on Windows), <code>run_python</code> does <strong>not</strong> refuse — it runs unsandboxed and tells you. Treat the sandbox as best-effort hardening, not a guarantee, and don't rely on it existing on Windows.</li><li><strong><code>run_python</code> is not otherwise a sandbox.</strong> Even sandboxed, it's an OS-level confinement (read-only FS + no net), not a full container. The source itself notes it's "acceptable for personal-assistant use on a trusted machine."</li><li><strong>Explicit <code>deny</code> always wins among the trust layers.</strong> A <code>deny</code> rule beats <code>trusted_dirs</code>/<code>trusted_domains</code>. But note <code>yolo</code> mode short-circuits <em>before</em> rules are evaluated — in <code>yolo</code>, even a <code>deny</code> rule is ignored. Don't expect a deny-list to protect you while in <code>yolo</code>.</li><li><strong><code>/auto on</code> overrides everything.</strong> It forces allow for the whole session, ignoring mode, rules, and trusted scopes. It resets when you <code>/auto off</code> or exit; it is not persisted to config.</li><li><strong>Categories, not individual tools, are auto-approved.</strong> <code>auto_approve</code> works at the category granularity (<code>fs</code>, <code>code</code>, <code>web</code>, …). To approve or block a single tool, use a <code>rules</code> entry with the tool name. <code>shell</code>, <code>subagent</code>, <code>computer</code>, and <code>web</code> are intentionally left out of the defaults because they can act broadly or reach the network.</li><li><strong>Trusted-dir matching is path-resolved.</strong> Arguments are <code>~</code>-expanded and resolved to absolute paths before the sub-path check, so symlink/relative tricks resolve to their real target. A non-string argument can't be matched by an arg-glob; rules only see string-valued args.</li><li><strong>Headless = strict.</strong> In any context that can't prompt (scheduler, web background runs, federation, workflow steps), unattended agents deny anything not pre-approved — so make sure scheduled tasks rely only on <code>auto_approve</code> / <code>rules</code> / trusted scopes, not on interactive approval.</li><li><strong><code>trusted_domains</code> is host-based.</strong> It matches the URL host exactly or as a subdomain (<code>docs.python.org</code> also covers <code>x.docs.python.org</code>), not by path or scheme.</li></ul>
+<h3>Relevant source files</h3>
+<ul><li><code>C:\evi\evi\permissions.py</code> — the <code>decide()</code> policy and rule/trust matching.</li><li><code>C:\evi\evi\sandbox.py</code> — <code>wrap()</code> / <code>available()</code> / <code>status()</code> per-OS.</li><li><code>C:\evi\evi\config.py</code> — <code>AutoSettings</code> (<code>[auto]</code>) and <code>ToolToggles</code> (<code>[tools]</code>).</li><li><code>C:\evi\evi\tools\code.py</code> — where <code>run_python</code> consults <code>tools.sandbox</code>.</li><li><code>C:\evi\evi\llm\agent.py</code> — wires <code>decide()</code>, <code>/auto</code>, and <code>/plan</code> into the run loop.</li><li><code>C:\evi\evi\apps\cli\main.py</code> — REPL slash commands and the CLI permission prompts.</li></ul>
+    </article>
+    <a class="doc-source" href="https://github.com/evi-assistant/evi-ai/blob/main/docs/features/permissions-and-sandbox.md">Edit on GitHub ↗</a>
+  </main>
+  <footer class="doc-foot">
+    <a href="index.html">← All documentation</a>
+    <span>eVi — local-first personal AI assistant</span>
+  </footer>
+</body>
+</html>

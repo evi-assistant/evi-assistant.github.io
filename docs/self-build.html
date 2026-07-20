@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Self-build — developing and building eVi *with* eVi — eVi docs</title>
+  <meta name="description" content="eVi is meant to maintain itself. It already has everything needed to work on its own source: a coding agent with file/shell/git tools, an isolated permission model, the full test s… — eVi documentation." />
+  <link rel="stylesheet" href="../styles.css" />
+  <link rel="stylesheet" href="docs.css" />
+  <link rel="icon" href="../favicon.svg" type="image/svg+xml" />
+</head>
+<body>
+  <header class="nav">
+    <a class="brand" href="../index.html" aria-label="eVi home">
+      <span class="brand-mark">e<span class="brand-accent">Vi</span></span>
+    </a>
+    <nav class="nav-links">
+      <a href="index.html">Docs</a>
+      <a href="../index.html#install">Install</a>
+      <a href="../index.html#download">Download</a>
+      <a class="nav-gh" href="https://github.com/evi-assistant/evi-ai">GitHub ↗</a>
+    </nav>
+  </header>
+  <main class="doc-main">
+    <article class="doc">
+<h1>Self-build — developing and building eVi <em>with</em> eVi</h1>
+<p>eVi is meant to maintain itself. It already has everything needed to work on its own source: a coding agent with file/shell/git tools, an isolated permission model, the full test suite, and a one-command desktop build. This guide is the "bootstrap" — how to drive changes, tests, and builds <strong>through eVi</strong> instead of an external assistant.</p>
+<p>The two enabling artifacts:</p>
+<ul><li><strong><a href="https://github.com/evi-assistant/evi-ai/blob/main/EVI.md" target="_blank" rel="noopener"><code>EVI.md</code></a></strong> at the repo root — auto-loaded as project context (<code>evi/project.py</code>) whenever you run eVi from <code>C:\evi</code>. It tells eVi's agent the repo map, the two-venv rule, the build/test commands, and the conventions.</li><li><strong><code>scripts/build-desktop.{ps1,sh}</code></strong> — the single "build the whole app" entrypoint (freeze the sidecar → bundle the Tauri app), which eVi can run with its shell tool.</li></ul>
+<h2>The development loop</h2>
+<p>Run eVi from inside the repo so it picks up <code>EVI.md</code>:</p>
+<pre><code class="language-bash">cd C:\evi
+evi chat --mode code          # or: evi run --mode code "…"  for one-shot</code></pre>
+<p>A typical change, driven by eVi:</p>
+<ol><li><strong>Describe the task</strong> ("add an <code>evi skill rename</code> command", "fix X in <code>server.py</code>"). eVi has the repo map + conventions from <code>EVI.md</code>.</li><li>eVi <strong>reads</strong> the relevant <code>docs/features/&lt;area&gt;.md</code> and module(s), then <strong>edits</strong> with its file tools.</li><li>eVi <strong>tests</strong>: <code>pytest -q</code> plus the matching e2e suite (<code>tests/cli_e2e</code> for CLI changes, <code>tests/e2e</code> for UI). Approve the shell calls (or use <code>--mode code</code> which pre-approves the dev toolset; or <code>/auto on</code>).</li><li>eVi <strong>lints</strong>: <code>ruff check evi tests scripts</code>.</li><li>eVi updates the <strong>feature doc + <code>examples/</code></strong> if behavior changed, and <strong>commits</strong> with a Conventional Commit message.</li></ol>
+<p>Tips:</p>
+<ul><li>A <strong>subagent / workflow</strong> (<code>evi workflow</code>) can split a big change into plan → implement → test stages.</li><li>An <strong>eval suite</strong> (<code>evi eval</code>) makes a good regression gate for behavior you care about; a <strong>routine</strong>/<strong>scheduler</strong> job can re-run it.</li><li>Give eVi a strong local coding model (e.g. a <code>qwen2.5-coder</code> via Ollama/LM Studio); route coding turns to it with <code>evi route</code> (see <a href="https://github.com/evi-assistant/evi-ai/blob/main/examples/routes.json" target="_blank" rel="noopener">examples/routes.json</a>).</li></ul>
+<h2>Building the app</h2>
+<pre><code class="language-bash"># unit + lint
+.venv/Scripts/python.exe -m pytest -q
+.venv/Scripts/python.exe -m ruff check evi tests scripts
+
+# desktop app (sidecar + Tauri) — produces the installers
+powershell -File scripts\build-desktop.ps1     # Windows
+bash scripts/build-desktop.sh                  # POSIX</code></pre>
+<p><code>build-desktop</code> runs <code>build-sidecar</code> (PyInstaller <code>--onedir</code> freeze of the web server, using <code>.venv-build</code>) then <code>npm run tauri build</code> with the standalone config. Installers land in <code>desktop/src-tauri/target/release/bundle/{msi,nsis}/</code>.</p>
+<blockquote><p><strong>Note:</strong> the final Tauri step may exit non-zero on the optional <em>updater-signing</em> step (it needs the CI-only <code>TAURI_SIGNING_PRIVATE_KEY</code>). The installers are still complete and runnable — the scripts report this rather than treating it as a failure. See <a href="desktop-bundling.html" target="_blank" rel="noopener">desktop-bundling.md</a>.</p></blockquote>
+<h2>Shipping a change</h2>
+<ol><li>Tests green (<code>pytest -q</code> + the relevant e2e), <code>ruff</code> clean.</li><li>Conventional Commit on a branch (don't commit on <code>main</code> without intent).</li><li>Docs touched? Mirror the changed <code>docs/*.md</code> to the public wiki (<code>evi-assistant/evi-ai.wiki</code>) — see <a href="releasing.html" target="_blank" rel="noopener">releasing.md</a>.</li><li><strong>Releases are currently paused</strong> on a GitHub Actions billing block (a human-only fix). Until that clears, keep changes local on <code>main</code>; don't tag or trigger the release workflows.</li></ol>
+<h2>Local-model notes (from dogfooding)</h2>
+<p>Running eVi against its own repo with a local coder model surfaced two things now fixed, which matter for any local-model use:</p>
+<ul><li><strong>Surgical edits.</strong> eVi has an <code>edit_file</code> tool (exact <code>old_string</code> → <code>new_string</code>). A small local model can't reliably regenerate a 300-line file with <code>write_file</code>, but it <em>can</em> produce a one-spot edit — so prefer <code>edit_file</code> for changes (it's also far cheaper in tokens).</li><li><strong>Text-emitted tool calls.</strong> Some local models (e.g. qwen2.5 via Ollama) print a tool call as JSON <em>content</em> instead of using the structured <code>tool_calls</code> field — sometimes as a Python/JSON hybrid (single-quoted strings, lowercase <code>false</code>). eVi now recovers these (<code>recover_text_tool_calls</code> in <code>evi/llm/agent.py</code>), so the call still runs. Frontier models over real APIs are unaffected (they always return structured calls).</li></ul>
+<p>Worked dogfood: with the recommended <code>qwen2.5-coder:14b</code> set as the model, eVi fixed a real bug in its own <code>evi/recommend.py</code> (a string-vs-numeric compute-capability comparison) via a single <code>edit_file</code> call.</p>
+<h2>Why this works (and its limits)</h2>
+<p>eVi's agent is model-driven: how well it can self-develop scales with the local model you give it. <code>EVI.md</code> + the test suite + the build script remove the <em>tooling</em> gap — eVi can read, edit, test, and build itself unattended. What remains is model capability and your review. Treat eVi's changes like any PR: read the diff, check the tests, then commit.</p>
+<p>See also: <a href="https://github.com/evi-assistant/evi-ai/blob/main/TESTING.md" target="_blank" rel="noopener">TESTING.md</a> (the four test layers), <a href="development.html" target="_blank" rel="noopener">development.md</a>, <a href="desktop-bundling.html" target="_blank" rel="noopener">desktop-bundling.md</a>, <a href="releasing.html" target="_blank" rel="noopener">releasing.md</a>.</p>
+    </article>
+    <a class="doc-source" href="https://github.com/evi-assistant/evi-ai/blob/main/docs/self-build.md">Edit on GitHub ↗</a>
+  </main>
+  <footer class="doc-foot">
+    <a href="index.html">← All documentation</a>
+    <span>eVi — local-first personal AI assistant</span>
+  </footer>
+</body>
+</html>

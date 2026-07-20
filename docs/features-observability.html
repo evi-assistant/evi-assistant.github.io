@@ -1,0 +1,132 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Observability (OpenTelemetry, stats, crash reports) — eVi docs</title>
+  <meta name="description" content="eVi gives you three independent ways to see what your assistant is doing — OpenTelemetry traces/metrics for tool calls, local usage stats computed from your transcripts, and opt-in… — eVi documentation." />
+  <link rel="stylesheet" href="../styles.css" />
+  <link rel="stylesheet" href="docs.css" />
+  <link rel="icon" href="../favicon.svg" type="image/svg+xml" />
+</head>
+<body>
+  <header class="nav">
+    <a class="brand" href="../index.html" aria-label="eVi home">
+      <span class="brand-mark">e<span class="brand-accent">Vi</span></span>
+    </a>
+    <nav class="nav-links">
+      <a href="index.html">Docs</a>
+      <a href="../index.html#install">Install</a>
+      <a href="../index.html#download">Download</a>
+      <a class="nav-gh" href="https://github.com/evi-assistant/evi-ai">GitHub ↗</a>
+    </nav>
+  </header>
+  <main class="doc-main">
+    <article class="doc">
+<h1>Observability (OpenTelemetry, stats, crash reports)</h1>
+<p>eVi gives you three independent ways to see what your assistant is doing — <strong>OpenTelemetry traces/metrics</strong> for tool calls, <strong>local usage stats</strong> computed from your transcripts, and <strong>opt-in crash reporting</strong> to a Sentry-compatible endpoint. All three are built around eVi's local-first, privacy-first posture: nothing leaves your machine unless you explicitly opt in and point it somewhere.</p>
+<h2>Overview</h2>
+<table><thead><tr><th>Pillar</th><th>What it does</th><th>Default</th><th>Data leaves machine?</th></tr></thead><tbody><tr><td><strong>OpenTelemetry</strong></td><td>Emits spans + metrics around every tool call (counts, durations) to an OTLP collector you run</td><td>OFF</td><td>Only if you set an endpoint</td></tr><tr><td><strong>Local stats</strong></td><td><code>evi stats</code> aggregates sessions, messages, tools, busy days, and rough token volume from your transcripts</td><td>Always available (reads local files)</td><td>Never</td></tr><tr><td><strong>Crash reports</strong></td><td>Captures uncaught exceptions, scrubs them aggressively, and sends them to your Sentry/GlitchTip DSN</td><td>OFF</td><td>Only if you opt in <em>and</em> set a DSN</td></tr></tbody></table>
+<p>Use <strong>OpenTelemetry</strong> when you want live dashboards/traces for tool latency and call volume (e.g. in Grafana/Jaeger/Tempo). Use <strong>stats</strong> for a quick local "how have I been using eVi?" summary with zero setup. Use <strong>crash reports</strong> when you want to know about failures in your own self-hosted error tracker without those reports carrying prompt text, file paths, or API keys.</p>
+<h2>How it works</h2>
+<h3>OpenTelemetry (<code>evi/otel.py</code>)</h3>
+<ul><li>At CLI startup, <code>otel.init_telemetry()</code> runs. It reads the <code>[telemetry]</code> config and is <strong>a no-op unless</strong> <code>traces</code> and/or <code>metrics</code> is enabled.</li><li>Tool calls in the agent loop are wrapped automatically. Each call runs inside a span named <code>evi.tool</code> (with a <code>tool.name</code> attribute), and after it finishes eVi records two metrics:<ul><li><code>evi.tool.calls</code> — a counter, tagged with <code>tool</code> and <code>ok</code> (<code>true</code>/<code>false</code>).</li><li><code>evi.tool.duration</code> — a histogram in <strong>ms</strong>, tagged with <code>tool</code>.</li></ul></li><li>Export uses <strong>OTLP over HTTP</strong>. Traces go to <code>&lt;endpoint&gt;/v1/traces</code>, metrics to <code>&lt;endpoint&gt;/v1/metrics</code>. eVi never starts an exporter on its own — <strong>without an endpoint, nothing leaves the process</strong> (the provider is created but has no exporter attached).</li><li>Everything degrades to a no-op: if the OTel packages aren't installed, if the feature is off, or if init fails, the <code>span(...)</code> context manager and <code>record_tool(...)</code> simply do nothing. Hot paths are safe to wrap unconditionally.</li><li>The service name reported in the OTel <code>Resource</code> defaults to <code>evi</code> and is configurable.</li></ul>
+<h3>Local stats (<code>evi/stats.py</code>)</h3>
+<ul><li><code>compute_stats()</code> reads your JSONL transcripts from <code>~/.evi/transcripts/</code>, iterates session files, and aggregates:<ul><li><strong>sessions</strong> and <strong>messages</strong> counts,</li><li>a <strong>role breakdown</strong> (user/assistant/tool/...),</li><li><strong>top tools</strong> (counted from <code>tool</code>-role entries that carry a <code>tool_name</code>),</li><li><strong>busiest days</strong> (top 7),</li><li><strong>approx_tokens</strong> — a rough estimate using <code>chars / 4</code> (this is <em>not</em> a real tokenizer),</li><li>first/last timestamps for the date span.</li></ul></li><li>Everything stays on disk and is printed locally. This is the deliberate local counterpart to a cloud analytics dashboard, which eVi does not provide.</li></ul>
+<h3>Crash reports (<code>evi/reporting.py</code>)</h3>
+<ul><li>At CLI startup, <code>init_reporting()</code> builds a reporter and <code>install_excepthook()</code> chains it into <code>sys.excepthook</code>. Uncaught CLI errors get captured (scrubbed) and then the original traceback is still printed normally — reporting never masks the real error.</li><li>A reporter is only "active" when <strong>all</strong> of these hold: reporting is enabled (config or <code>EVI_CRASH_REPORTS</code>), a DSN is present (config or <code>EVI_TELEMETRY_DSN</code>), the backend isn't <code>none</code>, and <code>sentry-sdk</code> imports successfully. Otherwise you get a no-op <code>NullReporter</code>.</li><li>The active <code>SentryReporter</code> initializes <code>sentry-sdk</code> with <code>send_default_pii=False</code>, <code>server_name="evi"</code>, and a <strong>scrubber</strong> as <code>before_send</code>. The scrubber is applied to every event and is deliberately aggressive because in an AI assistant, exception messages and stack-frame locals can carry prompt text, usernames in file paths, and secrets. It:<ul><li>drops the values of risky keys wholesale (<code>vars</code>, <code>env</code>/<code>environ</code>, <code>headers</code>, <code>cookies</code>, <code>authorization</code>, <code>data</code>, <code>request</code>, <code>extra</code>, <code>api_key</code>, <code>token</code>, <code>password</code>, <code>secret</code>, <code>dsn</code>),</li><li>rewrites your home directory to <code>&lt;HOME&gt;</code> and your username to <code>&lt;USER&gt;</code>,</li><li>redacts API-key/token patterns (OpenAI <code>sk-…</code>, GitHub <code>ghp_…</code>, Slack <code>xox…</code>, <code>Bearer …</code>) to <code>&lt;redacted&gt;</code>,</li><li>sets <code>server_name</code> to <code>evi</code> and removes the <code>user</code> (IP/id) block.</li></ul></li><li>The DSN is a write-only ingest key, so it is safe to keep in config. The backend is a swappable seam (<code>sentry</code> today; <code>none</code> disables it), selected by config rather than code.</li></ul>
+<h2>Setup</h2>
+<p>All three features are configured under a single <code>[telemetry]</code> section in <strong><code>~/.evi/config.toml</code></strong> (on Windows, <code>%USERPROFILE%\.evi\config.toml</code>). The home directory can be relocated with the <code>EVI_HOME</code> environment variable. Defaults (everything off) are:</p>
+<pre><code class="language-toml">[telemetry]
+# Crash reporting (Sentry/GlitchTip)
+crash_reports = false
+dsn           = ""
+backend       = "sentry"   # "sentry" | "none"
+
+# OpenTelemetry traces/metrics
+traces        = false
+metrics       = false
+otlp_endpoint = ""         # base OTLP/HTTP URL, e.g. http://localhost:4318
+service_name  = "evi"</code></pre>
+<h3>Optional pip extras</h3>
+<p>Both exporting features need optional dependencies (eVi ships without them by default):</p>
+<pre><code class="language-bash"># OpenTelemetry traces + metrics
+pip install 'evi-assistant[otel]'
+
+# Crash reporting (sentry-sdk)
+pip install 'evi-assistant[telemetry]'</code></pre>
+<p>If the extras aren't installed, the features stay inert (no-op) even if you enable them in config — they fail open rather than crashing eVi.</p>
+<h3>Environment-variable overrides</h3>
+<table><thead><tr><th>Variable</th><th>Effect</th></tr></thead><tbody><tr><td><code>EVI_OTLP_ENDPOINT</code></td><td>Overrides <code>otlp_endpoint</code> (base OTLP/HTTP URL). Trailing slashes are stripped.</td></tr><tr><td><code>EVI_CRASH_REPORTS</code></td><td>Truthy (<code>1</code>, <code>true</code>, <code>yes</code>, …) / falsy (`<code>, </code>0<code>, </code>false<code>, </code>no<code>) override for </code>crash_reports`.</td></tr><tr><td><code>EVI_TELEMETRY_DSN</code></td><td>Overrides the crash-report <code>dsn</code>.</td></tr></tbody></table>
+<h3>Stats</h3>
+<p>No setup beyond having transcripts. Stats read <code>~/.evi/transcripts/</code>, which is populated when transcript logging is on (<code>[tools] transcripts = true</code>, the default). If transcripts are disabled, <code>evi stats</code> will report nothing.</p>
+<h2>Usage</h2>
+<h3><code>evi stats</code> — local usage analytics</h3>
+<pre><code class="language-text">evi stats [--days N] [--json]</code></pre>
+<ul><li><code>--days N</code> — only look at the last N days (<code>0</code>, the default, means all history).</li><li><code>--json</code> — print the raw aggregated dict as JSON instead of the formatted summary.</li></ul>
+<p>The human-readable output shows session/message counts, an approximate token total (in thousands), the date span, the role breakdown, the top 8 tools, and the busiest days. If there are no transcripts it prints a hint that <code>tools.transcripts</code> may be off.</p>
+<p>The same numbers are available in the web/desktop app under <strong>Settings → Usage</strong> (backed by <code>GET /api/stats?days=N</code>), with <strong>All / 30d / 7d</strong> range buttons and the role/tool/busy-day breakdowns shown as chips.</p>
+<h3>OpenTelemetry — automatic once enabled</h3>
+<p>There is no separate command. Once <code>traces</code>/<code>metrics</code> are enabled, an <code>otlp_endpoint</code> is set, and the <code>[otel]</code> extra is installed, eVi instruments tool calls automatically every time you run a chat (CLI or web). Spans and metrics flow to your collector in the background.</p>
+<h3>Crash reports — automatic once enabled</h3>
+<p>Also no separate command. Once enabled with a DSN, eVi installs a chained <code>sys.excepthook</code> at startup; any uncaught CLI exception is scrubbed and sent, then the traceback prints as usual.</p>
+<h3>Web UI</h3>
+<p>The web server initializes OpenTelemetry the same way as the CLI on startup, so enabling <code>[telemetry] traces/metrics</code> instruments web-driven tool calls too. (The Settings → Model &amp; Backend page surfaces hardware/OS stats, which is separate from <code>evi stats</code> usage analytics.)</p>
+<h2>Examples</h2>
+<h3>Example 1 — Local OTLP collector, then watch tool metrics</h3>
+<p>Install the extra, point eVi at a local OTLP/HTTP collector (the default OTLP HTTP port is <code>4318</code>), and run a chat. Spans/metrics for each tool call are exported automatically.</p>
+<pre><code class="language-toml"># ~/.evi/config.toml
+[telemetry]
+traces        = true
+metrics       = true
+otlp_endpoint = "http://localhost:4318"
+service_name  = "evi"</code></pre>
+<pre><code class="language-bash">pip install 'evi-assistant[otel]'
+
+# Optional: override the endpoint for a single run without editing config
+export EVI_OTLP_ENDPOINT="http://localhost:4318"
+
+evi chat "summarize my notes from today"</code></pre>
+<p>In your backend you'll see the <code>evi.tool</code> spans plus the <code>evi.tool.calls</code> counter (tagged <code>tool</code> + <code>ok</code>) and the <code>evi.tool.duration</code> histogram (in ms, tagged <code>tool</code>), all under service name <code>evi</code>.</p>
+<h3>Example 2 — Quick local usage report</h3>
+<pre><code class="language-bash"># Formatted summary for the last 30 days
+evi stats --days 30</code></pre>
+<pre><code class="language-text">42 sessions · 318 messages · ~57k tokens  Apr 12 - May 09
+  roles: user: 159, assistant: 142, tool: 17
+  top tools: fs.read (9), websearch (5), fs.write (3)
+  busiest days: 2026-05-07 (6), 2026-05-02 (5), 2026-04-29 (4)</code></pre>
+<p>For piping into other tooling, ask for raw JSON:</p>
+<pre><code class="language-bash">evi stats --json</code></pre>
+<pre><code class="language-json">{
+  "sessions": 42,
+  "messages": 318,
+  "roles": { "user": 159, "assistant": 142, "tool": 17 },
+  "tools": { "fs.read": 9, "websearch": 5, "fs.write": 3 },
+  "busiest_days": { "2026-05-07": 6, "2026-05-02": 5 },
+  "approx_tokens": 14250,
+  "first_ts": 1744483200.0,
+  "last_ts": 1746748800.0
+}</code></pre>
+<h3>Example 3 — Opt-in crash reporting to self-hosted GlitchTip</h3>
+<pre><code class="language-toml"># ~/.evi/config.toml
+[telemetry]
+crash_reports = true
+dsn           = "https://&lt;key&gt;@glitchtip.example.com/1"
+backend       = "sentry"   # set to "none" to disable without removing the dsn</code></pre>
+<pre><code class="language-bash">pip install 'evi-assistant[telemetry]'
+evi chat "..."   # any uncaught error is scrubbed, sent, then printed locally</code></pre>
+<p>To toggle reporting per-run via environment without touching config:</p>
+<pre><code class="language-bash">EVI_CRASH_REPORTS=0 evi chat "..."          # force-disable for this run
+EVI_TELEMETRY_DSN="https://&lt;key&gt;@..." EVI_CRASH_REPORTS=1 evi chat "..."</code></pre>
+<h2>Notes / limits</h2>
+<ul><li><strong>Off by default, fail-open everywhere.</strong> All three pillars are inert until configured, and if the optional deps are missing or init fails, eVi continues normally — telemetry never crashes the app and crash reporting never hides the real traceback.</li><li><strong>Nothing is exported without an endpoint/DSN.</strong> OpenTelemetry needs <code>otlp_endpoint</code> (or <code>EVI_OTLP_ENDPOINT</code>); crash reports need a <code>dsn</code> (or <code>EVI_TELEMETRY_DSN</code>) <em>and</em> <code>crash_reports = true</code> <em>and</em> <code>backend != "none"</code>. Miss any of these and the feature is a no-op.</li><li><strong>OTLP transport is HTTP only.</strong> Traces are sent to <code>&lt;endpoint&gt;/v1/traces</code> and metrics to <code>&lt;endpoint&gt;/v1/metrics</code>, so point <code>otlp_endpoint</code> at an OTLP/HTTP receiver (typically port <code>4318</code>), not a gRPC (<code>4317</code>) endpoint. Trailing slashes on the endpoint are stripped automatically.</li><li><strong><code>approx_tokens</code> is an estimate.</strong> Stats use <code>chars / 4</code>, not a real tokenizer — treat it as a rough volume signal, and note it only counts string <code>content</code> fields in transcript entries.</li><li><strong>Stats depend on transcripts.</strong> If <code>[tools] transcripts</code> is off, there's nothing to aggregate and <code>evi stats</code> will say so.</li><li><strong>The crash-report scrubber is aggressive by design but not infallible.</strong> It drops known PII-carrying keys, rewrites home/username, and redacts common key/token formats — but it can't guarantee a novel secret format won't appear. The DSN itself is a write-only ingest key, safe to keep in synced config.</li><li><strong>Top-tools counting</strong> comes from <code>tool</code>-role transcript entries that carry a <code>tool_name</code>; tools invoked in sessions that predate transcript logging won't appear.</li></ul>
+<p>Relevant source files: <code>C:\evi\evi\otel.py</code>, <code>C:\evi\evi\stats.py</code>, <code>C:\evi\evi\reporting.py</code>, <code>C:\evi\evi\config.py</code> (TelemetrySettings, lines 188-209), and the CLI wiring in <code>C:\evi\evi\apps\cli\main.py</code> (<code>stats</code> command ~line 4042; startup init ~lines 153-158).</p>
+    </article>
+    <a class="doc-source" href="https://github.com/evi-assistant/evi-ai/blob/main/docs/features/observability.md">Edit on GitHub ↗</a>
+  </main>
+  <footer class="doc-foot">
+    <a href="index.html">← All documentation</a>
+    <span>eVi — local-first personal AI assistant</span>
+  </footer>
+</body>
+</html>

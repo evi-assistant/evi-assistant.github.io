@@ -1,0 +1,135 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Content Guardrails — eVi docs</title>
+  <meta name="description" content="Content Guardrails are a lightweight, fully local content-filter layer that sits between you and the model. They let you block or scrub specific content on the way *in* (your messa… — eVi documentation." />
+  <link rel="stylesheet" href="../styles.css" />
+  <link rel="stylesheet" href="docs.css" />
+  <link rel="icon" href="../favicon.svg" type="image/svg+xml" />
+</head>
+<body>
+  <header class="nav">
+    <a class="brand" href="../index.html" aria-label="eVi home">
+      <span class="brand-mark">e<span class="brand-accent">Vi</span></span>
+    </a>
+    <nav class="nav-links">
+      <a href="index.html">Docs</a>
+      <a href="../index.html#install">Install</a>
+      <a href="../index.html#download">Download</a>
+      <a class="nav-gh" href="https://github.com/evi-assistant/evi-ai">GitHub ↗</a>
+    </nav>
+  </header>
+  <main class="doc-main">
+    <article class="doc">
+<h1>Content Guardrails</h1>
+<h2>Overview</h2>
+<p>Content Guardrails are a lightweight, <strong>fully local</strong> content-filter layer that sits between you and the model. They let you block or scrub specific content on the way <em>in</em> (your message, before it reaches the LLM) and on the way <em>out</em> (the assistant's reply, after it streams). Think of it as a regex-first, locally graded counterpart to hosted moderation features like Bedrock Guardrails or Gemini safety settings — but nothing leaves your machine.</p>
+<p>Typical reasons to turn this on:</p>
+<ul><li><strong>Secret hygiene</strong> — stop yourself from pasting API keys, tokens, or passwords into the model ("don't send my secrets to the backend").</li><li><strong>PII redaction</strong> — automatically mask emails, phone numbers, etc. in both directions.</li><li><strong>Shared / kiosk installs</strong> — apply a basic safety policy (self-harm, toxicity) when other people use the assistant.</li></ul>
+<p>Guardrails are <strong>off by default</strong>. They only activate when you create <code>~/.evi/guardrails.toml</code> with <code>enabled = true</code> and at least one rule.</p>
+<blockquote><p>This is a guardrail, not airtight security. A determined model or user can phrase around a regex. It is meant for hygiene and shared-machine policy, not as a hard security boundary.</p></blockquote>
+<h2>How it works</h2>
+<p>Guardrails load from a single TOML file and apply to text in a <strong>direction</strong>:</p>
+<ul><li><strong>input</strong> — runs on your raw message <em>before</em> it hits the LLM. A <code>block</code> match refuses the turn entirely (no LLM call). A <code>redact</code> match replaces the matched spans with <code>[REDACTED]</code> and proceeds.</li><li><strong>output</strong> — runs on the assistant's final text <em>after</em> streaming finishes. Because the text has already streamed to the screen, eVi can't un-stream it — but it cleans the <strong>stored</strong> copy so it can't poison later turns or the transcript, and flags the turn so the UI can show a warning. A <code>block</code> match replaces the stored content with <code>[output blocked by guardrail: …]</code>; a <code>redact</code> match rewrites the stored content.</li></ul>
+<p>Three rule kinds <strong>layer together</strong> and run in a fixed order, <strong>stopping at the first block</strong>:</p>
+<ol><li><strong><code>[[rule]]</code> — regex.</strong> Fast, deterministic, fully local. Can <code>block</code> or <code>redact</code>. Regexes are compiled and validated at load time; invalid ones are silently skipped.</li><li><strong><code>[[judge]]</code> — semantic, LLM-graded.</strong> eVi's <em>own</em> model classifies the text against a plain-English <code>policy</code> you write and blocks on a match. It runs as a single, separate, non-streaming model round-trip per turn (temperature 0, no tools), so it stays local. <strong>Block-only</strong> (no redact).</li><li><strong><code>[[classifier]]</code> — offline ML model.</strong> A local HuggingFace text-classification model scores the text; eVi blocks when a score for one of your <code>labels</code> crosses <code>threshold</code>. Fully offline after the first download. <strong>Block-only.</strong></li></ol>
+<p>Important behavior of the two semantic layers (<code>judge</code> and <code>classifier</code>):</p>
+<ul><li>They <strong>only run if the previous layers didn't already block</strong> — once something blocks, eVi stops.</li><li>They <strong>fail open</strong>: if the grader model is missing, errors, or is flaky, that rule is <em>skipped</em> — it never wedges your turn. (A missing classifier dependency, a model that won't load, or an exception all just skip the rule.)</li></ul>
+<h2>Setup</h2>
+<h3>Config file</h3>
+<p>All guardrail config lives in one file:</p>
+<ul><li><strong>Path:</strong> <code>~/.evi/guardrails.toml</code> (Windows: <code>%USERPROFILE%\.evi\guardrails.toml</code>)</li><li>If the file is missing or unparseable, guardrails are <strong>disabled</strong>.</li><li><code>evi guardrails path</code> prints the exact path on your system.</li></ul>
+<p>Top-level key:</p>
+<table><thead><tr><th>Key</th><th>Type</th><th>Default</th><th>Notes</th></tr></thead><tbody><tr><td><code>enabled</code></td><td>bool</td><td><code>true</code></td><td>Master switch. Even with <code>enabled = true</code>, guardrails stay off unless at least one rule/judge/classifier is defined.</td></tr></tbody></table>
+<h3><code>[[rule]]</code> — regex rules</h3>
+<table><thead><tr><th>Key</th><th>Default</th><th>Notes</th></tr></thead><tbody><tr><td><code>pattern</code></td><td>(required)</td><td>A Python <code>re</code> regex. Empty/invalid patterns are skipped.</td></tr><tr><td><code>name</code></td><td>first 24 chars of pattern</td><td>Label shown in listings/warnings.</td></tr><tr><td><code>action</code></td><td><code>"block"</code></td><td><code>block</code> or <code>redact</code>. Anything else falls back to <code>block</code>.</td></tr><tr><td><code>applies_to</code></td><td><code>"both"</code></td><td><code>input</code>, <code>output</code>, or <code>both</code>. Anything else falls back to <code>both</code>.</td></tr></tbody></table>
+<h3><code>[[judge]]</code> — semantic LLM rules</h3>
+<table><thead><tr><th>Key</th><th>Default</th><th>Notes</th></tr></thead><tbody><tr><td><code>policy</code></td><td>(required)</td><td>Plain-English description of what's disallowed. Empty → rule skipped.</td></tr><tr><td><code>name</code></td><td>first 24 chars of policy</td><td>Label.</td></tr><tr><td><code>applies_to</code></td><td><code>"both"</code></td><td><code>input</code>, <code>output</code>, or <code>both</code>. Block-only.</td></tr></tbody></table>
+<p><code>[[judge]]</code> rules use your configured chat model (<code>[llm] model</code> in <code>config.toml</code>) as the grader — no extra setup, but they add one model round-trip per turn they run on.</p>
+<h3><code>[[classifier]]</code> — offline ML rules</h3>
+<table><thead><tr><th>Key</th><th>Default</th><th>Notes</th></tr></thead><tbody><tr><td><code>model</code></td><td><code>""</code> → <code>unitary/toxic-bert</code></td><td>Any HuggingFace text-classification model id.</td></tr><tr><td><code>name</code></td><td><code>"classifier"</code></td><td>Label.</td></tr><tr><td><code>labels</code></td><td><code>[]</code> (any label)</td><td>Lower-cased; block when any listed label crosses threshold. <code>[]</code> = block on any label.</td></tr><tr><td><code>threshold</code></td><td><code>0.5</code></td><td>Score (0–1) at/above which the rule blocks.</td></tr><tr><td><code>applies_to</code></td><td><code>"both"</code></td><td><code>input</code>, <code>output</code>, or <code>both</code>. Block-only.</td></tr></tbody></table>
+<p><strong>Optional dependency.</strong> <code>[[classifier]]</code> rules need <code>transformers</code> + <code>torch</code>:</p>
+<pre><code class="language-bash">pip install 'evi-assistant[moderation]'</code></pre>
+<p>The model loads lazily (first use downloads weights; cached afterward) and runs fully offline thereafter. If the deps or model aren't available, classifier rules simply fail open and are skipped. Downloaded model weights live under <code>~/.evi/models/</code>.</p>
+<h2>Usage</h2>
+<h3>CLI — <code>evi guardrails</code></h3>
+<p>There are three subcommands for inspecting and dry-running your config (none of them edit the file — you hand-edit <code>guardrails.toml</code>):</p>
+<pre><code class="language-bash">evi guardrails path                       # print the config file path
+evi guardrails list                       # list loaded rules + enabled state
+evi guardrails test "&lt;text&gt;"              # dry-run text through the rules
+evi guardrails test "&lt;text&gt;" --direction input    # input | output | both (default both)</code></pre>
+<p><code>evi guardrails test</code> shows the verdict (<code>allowed</code> / <code>BLOCKED</code>), which rules blocked or redacted, and the redacted result text. Note that <code>test</code> exercises the <strong>regex layer only</strong> — it does not invoke the <code>[[judge]]</code> or <code>[[classifier]]</code> graders.</p>
+<h3>In chat (CLI and Web)</h3>
+<p>Guardrails are applied automatically whenever they're enabled — there's no per-turn flag to toggle. Both the interactive CLI chat and the web UI load <code>~/.evi/guardrails.toml</code> at session start and wire it into the agent.</p>
+<ul><li><strong>CLI chat / REPL:</strong> if a rule fires, you'll see the guardrail event inline; a blocked input ends the turn before any model call.</li><li><strong>Web UI:</strong> guardrail events render as a warning bubble, e.g. <code>⚠ guardrail (input): …</code>, describing the direction and what fired.</li></ul>
+<p>There is <strong>no slash command</strong> to enable/disable guardrails — control them by editing the config file (and <code>enabled</code>).</p>
+<h3>Web / Desktop — the Guardrails editor</h3>
+<p>The web and desktop apps have a <strong>Settings → Guardrails</strong> panel that shows the enabled state and a rule-count summary (regex / judge / classifier), plus a <code>guardrails.toml</code> editor. <strong>Save</strong> validates the TOML server-side (each <code>[[rule]]</code> regex must compile and each <code>[[judge]]</code> must have a <code>policy</code>) and reports the error inline rather than writing a broken file. It is backed by <code>GET</code>/<code>POST /api/guardrails</code>.</p>
+<h2>Examples</h2>
+<h3>Example 1 — Block secrets on input, redact emails both ways</h3>
+<p><code>~/.evi/guardrails.toml</code>:</p>
+<pre><code class="language-toml">enabled = true
+
+[[rule]]
+name = "block-secrets"
+pattern = "(?i)(api[_-]?key|secret|password)\\s*[:=]"
+action = "block"          # refuse the whole turn — never send it to the model
+applies_to = "input"
+
+[[rule]]
+name = "redact-emails"
+pattern = "[\\w.+-]+@[\\w-]+\\.[\\w.-]+"
+action = "redact"         # mask the match, then continue
+applies_to = "both"</code></pre>
+<p>Verify it loaded and dry-run some text:</p>
+<pre><code class="language-bash">$ evi guardrails list
+guardrails: enabled
+
+  block-secrets block (input) — /(?i)(api[_-]?key|secret|password)\s*[:=]/
+  redact-emails redact (both) — /[\w.+-]+@[\w-]+\.[\w.-]+/
+
+$ evi guardrails test "my api_key= sk-12345 and email is me@example.com"
+input: BLOCKED
+  blocked by: block-secrets
+
+$ evi guardrails test "ping me@example.com about the docs" --direction output
+output: allowed
+  redacted by: redact-emails
+  result: ping [REDACTED] about the docs</code></pre>
+<h3>Example 2 — Semantic judge + offline toxicity classifier</h3>
+<p><code>~/.evi/guardrails.toml</code>:</p>
+<pre><code class="language-toml">enabled = true
+
+[[judge]]                  # graded by your local LLM, no extra install
+name = "no-self-harm"
+policy = "Requests for, or content encouraging, self-harm or suicide."
+applies_to = "both"
+
+[[classifier]]             # offline HF model; needs evi-assistant[moderation]
+name = "toxicity"
+model = "unitary/toxic-bert"            # "" also resolves to this default
+labels = ["toxic", "threat", "insult"]  # [] would block on ANY returned label
+threshold = 0.7
+applies_to = "both"</code></pre>
+<p>Install the optional classifier deps, then confirm the rules are loaded:</p>
+<pre><code class="language-bash">$ pip install 'evi-assistant[moderation]'
+
+$ evi guardrails list
+guardrails: enabled
+
+  no-self-harm judge (both) — Requests for, or content encouraging, self-harm or…
+  toxicity classifier (both) — unitary/toxic-bert &gt;= 0.7 on toxic, insult, threat</code></pre>
+<p>These two layers run live during chat (<code>evi chat</code> or the web UI). Remember that <code>evi guardrails test</code> only checks regex rules, so it will report <code>allowed</code> for text that the judge or classifier would catch at runtime — exercise those in an actual chat turn.</p>
+<h2>Notes / limits</h2>
+<ul><li><strong>Off by default.</strong> No <code>guardrails.toml</code>, or <code>enabled = false</code>, or zero rules → guardrails do nothing. A malformed TOML file also disables them (rather than erroring).</li><li><strong>Fail-open semantic layers.</strong> <code>[[judge]]</code> and <code>[[classifier]]</code> never block a turn due to their <em>own</em> failure — a missing model, missing <code>[moderation]</code> deps, a load error, or a flaky response all cause the rule to be skipped, not the turn refused. The deterministic <code>[[rule]]</code> regex layer does <em>not</em> fail open: a matching block rule always blocks.</li><li><strong>First-block-wins ordering.</strong> Layers run regex → judge → classifier and stop at the first block, so a later layer won't double-flag content an earlier one already blocked. Redactions from the regex layer still apply before the semantic layers run.</li><li><strong>Output is post-stream.</strong> Output guardrails can't retract text already shown on screen; they sanitize the <em>stored</em> history/transcript and flag the turn. Treat output rules as "keep the bad text out of memory and warn me," not as a hard pre-display filter.</li><li><strong>Block-only for semantic kinds.</strong> <code>[[judge]]</code> and <code>[[classifier]]</code> can only block; only <code>[[rule]]</code> regexes can <code>redact</code>.</li><li><strong>Judge cost.</strong> Each <code>[[judge]]</code> rule that runs adds a separate model round-trip (temperature 0, ~120 tokens) per turn — cheap locally, but not free.</li><li><strong>Classifier input is capped</strong> at the first 2000 characters of the text before scoring; long inputs are truncated for classification.</li><li><strong><code>test</code> is regex-only.</strong> <code>evi guardrails test</code> is a dry run of the regex layer; it does not call the judge or classifier graders.</li><li><strong>Not airtight.</strong> Regexes can be evaded by rephrasing, and the semantic layers are only as good as your local model / classifier. Use guardrails for hygiene and shared-machine policy, not as a security boundary.</li></ul>
+    </article>
+    <a class="doc-source" href="https://github.com/evi-assistant/evi-ai/blob/main/docs/features/guardrails.md">Edit on GitHub ↗</a>
+  </main>
+  <footer class="doc-foot">
+    <a href="index.html">← All documentation</a>
+    <span>eVi — local-first personal AI assistant</span>
+  </footer>
+</body>
+</html>

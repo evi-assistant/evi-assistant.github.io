@@ -1,0 +1,137 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Voice (TTS engines, STT, AutoSpeaker) — eVi docs</title>
+  <meta name="description" content="eVi can both speak (text-to-speech, TTS) and listen (speech-to-text, STT) entirely on your own machine. Like the rest of eVi, voice is local-first: the default TTS engine uses what… — eVi documentation." />
+  <link rel="stylesheet" href="../styles.css" />
+  <link rel="stylesheet" href="docs.css" />
+  <link rel="icon" href="../favicon.svg" type="image/svg+xml" />
+</head>
+<body>
+  <header class="nav">
+    <a class="brand" href="../index.html" aria-label="eVi home">
+      <span class="brand-mark">e<span class="brand-accent">Vi</span></span>
+    </a>
+    <nav class="nav-links">
+      <a href="index.html">Docs</a>
+      <a href="../index.html#install">Install</a>
+      <a href="../index.html#download">Download</a>
+      <a class="nav-gh" href="https://github.com/evi-assistant/evi-ai">GitHub ↗</a>
+    </nav>
+  </header>
+  <main class="doc-main">
+    <article class="doc">
+<h1>Voice (TTS engines, STT, AutoSpeaker)</h1>
+<h2>Overview</h2>
+<p>eVi can both <strong>speak</strong> (text-to-speech, TTS) and <strong>listen</strong> (speech-to-text, STT) entirely on your own machine. Like the rest of eVi, voice is local-first: the default TTS engine uses whatever speech synthesizer ships with your OS (no Python packages, no network), and STT runs a local Whisper model — your audio never leaves the box.</p>
+<p>Use voice when you want eVi to:</p>
+<ul><li>Read replies aloud sentence-by-sentence as they stream (the <code>AutoSpeaker</code>).</li><li>Run hands-free as an always-on voice assistant that listens, transcribes, chats, and answers aloud (<code>evi voice loop</code>).</li><li>Transcribe a one-off mic recording or an existing audio file into text.</li><li>Let the agent itself speak text or transcribe the mic via tools (<code>speak_text</code>, <code>transcribe_microphone</code>) during a conversation.</li></ul>
+<p>There are four selectable TTS engines (one zero-dependency, three optional neural ones) and an optional Whisper-based STT stack.</p>
+<h2>How it works</h2>
+<h3>TTS — four engines</h3>
+<p>The engine is chosen by <code>[voice] engine</code> in your config. The four values are <code>system</code>, <code>coqui</code>, <code>f5</code>, and <code>piper</code>.</p>
+<ul><li><strong><code>system</code></strong> (default, zero-dep) — uses the platform's built-in voice, spawned as a subprocess:<ul><li><strong>Windows</strong> — PowerShell <code>System.Speech.Synthesis.SpeechSynthesizer</code>.</li><li><strong>macOS</strong> — the <code>say</code> command.</li><li><strong>Linux</strong> — <code>espeak-ng</code> if installed, else <code>espeak</code>, else an error.</li><li><code>detect_backend()</code> resolves this to one of <code>windows</code>, <code>macos</code>, <code>espeak-ng</code>, <code>espeak</code>, or <code>none</code>. The <code>rate</code> option (words-per-minute-ish, engine-dependent) only applies to the system engine.</li></ul></li><li><strong><code>coqui</code></strong> — Coqui XTTS v2: multilingual, can clone a voice from a reference WAV (<code>clone_sample</code>). Lazy-imports the <code>TTS</code> package; the model is loaded (and downloaded on first use) and cached per model id.</li><li><strong><code>f5</code></strong> — F5-TTS: fast zero-shot cloning. Driven through its <code>f5-tts_infer-cli</code> binary.</li><li><strong><code>piper</code></strong> — Piper: lightweight local neural voices, <strong>no cloning</strong>. Requires the <code>piper</code> binary and a voice <code>.onnx</code> file in <code>[voice] model</code>.</li></ul>
+<p>The neural engines synthesize to a temporary WAV in your temp dir and then play it with whatever the platform provides — <code>winsound</code> on Windows, <code>afplay</code> on macOS, and <code>paplay</code>/<code>aplay</code>/<code>ffplay</code> on Linux (in that order of preference). All three neural engines are lazy-imported, so eVi starts instantly and only pays the heavy import cost when you actually select one; a missing dependency raises a clear <code>VoiceError</code> with an install hint rather than crashing.</p>
+<h3>AutoSpeaker — streaming speech</h3>
+<p><code>AutoSpeaker</code> is what makes replies sound natural while they stream. It buffers incoming text deltas and, whenever it sees a sentence terminator (<code>.</code>, <code>!</code>, <code>?</code> followed by whitespace or end-of-input), it hands that completed sentence to a <strong>background worker thread</strong> that speaks it via the configured engine. Speaking is blocking <em>within</em> that thread so sentences don't overlap audibly, while your main loop stays responsive. Before speaking, each chunk is cleaned: fenced code blocks become "[code block]", inline code becomes "code", URLs become "link", and newlines collapse into sentence breaks — so eVi never reads raw code or URLs aloud. If the TTS backend disappears mid-stream, the worker fails open: it stops trying silently instead of erroring.</p>
+<h3>STT — Whisper</h3>
+<p>Speech recognition uses <code>faster-whisper</code> (a CTranslate2 build of Whisper) plus <code>sounddevice</code> for mic capture. Both are optional — install the <code>stt</code> extra to enable them. The model is downloaded to the Hugging Face cache on first use (~75 MB for the default <code>tiny.en</code>); larger models are more accurate but slower. Models are cached in memory across calls so you only pay the 1–3 s load once. Available models, fastest → most accurate: <code>tiny.en</code>, <code>base.en</code>, <code>small.en</code>, <code>medium.en</code>, <code>large-v3</code> (the <code>.en</code> variants are English-only, smaller, and faster).</p>
+<h3>AutoListener — always-on listening</h3>
+<p>The <code>evi voice loop</code> command runs an <code>AutoListener</code>: a background thread opens a mic input stream and runs energy-based <strong>voice activity detection</strong> (VAD) on 30 ms frames. Roughly 180 ms of loud audio starts an utterance; ~750 ms of silence ends it (or a 30 s hard cap). The clip is transcribed with Whisper and passed to a callback that chats with the agent and speaks the reply. While eVi is talking, the listener is <strong>paused</strong> so it doesn't transcribe its own voice. An optional <strong>wake phrase</strong> gates utterances: only speech containing the phrase (case-insensitive substring) is acted on, and the wake phrase is stripped before the request reaches the agent.</p>
+<h2>Setup</h2>
+<h3>Config — <code>[voice]</code> in <code>~/.evi/config.toml</code></h3>
+<p>Voice settings live in the <code>[voice]</code> section of your main config file at <code>~/.evi/config.toml</code> (on Windows, <code>%USERPROFILE%\.evi\config.toml</code>; overridable with the <code>EVI_HOME</code> environment variable). First run writes the defaults shown here:</p>
+<pre><code class="language-toml">[voice]
+engine       = "system"   # system | coqui | f5 | piper
+model        = ""         # engine-specific model id / path
+clone_sample = ""         # reference WAV for the cloning engines (coqui / f5)
+language     = "en"</code></pre>
+<table><thead><tr><th>Key</th><th>Default</th><th>Meaning</th></tr></thead><tbody><tr><td><code>engine</code></td><td><code>"system"</code></td><td>Which TTS engine to use.</td></tr><tr><td><code>model</code></td><td><code>""</code></td><td>Engine-specific model id or path. For Coqui, an XTTS model id (defaults to <code>tts_models/multilingual/multi-dataset/xtts_v2</code> when blank); for Piper, the <strong>required</strong> path to a voice <code>.onnx</code>.</td></tr><tr><td><code>clone_sample</code></td><td><code>""</code></td><td>Reference audio WAV for voice cloning (used by <code>coqui</code> and <code>f5</code>).</td></tr><tr><td><code>language</code></td><td><code>"en"</code></td><td>ISO language hint for the neural engines.</td></tr></tbody></table>
+<h3>The <code>voice</code> tool toggle</h3>
+<p>The agent-facing tools (<code>speak_text</code>, <code>transcribe_microphone</code>) are <strong>opt-in</strong>. Enable them under <code>[tools]</code>:</p>
+<pre><code class="language-toml">[tools]
+voice = true   # local TTS / STT tools for the agent — opt in (default false)</code></pre>
+<p>This toggle does <strong>not</strong> affect the <code>evi voice ...</code> CLI commands or the <code>/speak</code> REPL command — those work regardless. It only controls whether the LLM agent can call the voice tools itself.</p>
+<h3>Optional pip extras</h3>
+<ul><li><strong>STT</strong> (<code>evi voice listen</code>, <code>transcribe</code>, <code>loop</code>, the web transcribe endpoint, and the <code>transcribe_microphone</code> tool):</li></ul>
+<pre><code class="language-bash">  pip install 'evi-assistant[stt]'</code></pre>
+<p>This pulls in <code>faster-whisper</code>, <code>sounddevice</code>, and <code>numpy</code>.</p>
+<ul><li><strong>Neural TTS engines</strong> are <em>not</em> bundled and have no single eVi extra — install each engine's own package/binary:<ul><li><strong>Coqui:</strong> <code>pip install coqui-tts</code></li><li><strong>F5-TTS:</strong> <code>pip install f5-tts</code> (provides <code>f5-tts_infer-cli</code>)</li><li><strong>Piper:</strong> install the <code>piper</code> binary (or <code>pip install piper-tts</code>) and point <code>[voice] model</code> at a voice <code>.onnx</code>.</li></ul></li></ul>
+<blockquote><p>Note: the Coqui error message suggests <code>pip install 'evi-assistant[voice-clone]'</code>, but no such extra is currently declared — install <code>coqui-tts</code> directly.</p></blockquote>
+<p>The <code>system</code> engine needs nothing on Windows and macOS; on Linux it needs <code>espeak-ng</code> (preferred) or <code>espeak</code> on your <code>PATH</code>, plus a WAV player (<code>pulseaudio-utils</code> / <code>alsa-utils</code> / <code>ffmpeg</code>) if you use a neural engine.</p>
+<h2>Usage</h2>
+<h3>CLI — <code>evi voice ...</code></h3>
+<pre><code class="language-text">evi voice speak       Speak text aloud via the configured engine.
+evi voice backend     Show which platform TTS backend the 'system' engine will use.
+evi voice engines     List all engines and whether each is installed (* = active).
+evi voice listen      Record from the mic and print the transcription.
+evi voice transcribe  Transcribe an existing audio file.
+evi voice loop        Always-on voice assistant (listen → chat → speak). Ctrl-C to stop.</code></pre>
+<p>Key options:</p>
+<ul><li><code>evi voice speak &lt;text&gt; [--rate N] [--engine system|coqui|f5|piper]</code> — <code>--engine</code> overrides the config for this one call; <code>--rate</code> only affects the system engine.</li><li><code>evi voice listen [--duration 5.0] [--model tiny.en] [--device cpu|cuda]</code></li><li><code>evi voice transcribe &lt;path&gt; [--model tiny.en] [--device cpu|cuda]</code></li><li><code>evi voice loop [--wake "evi"] [--model tiny.en] [--device cpu|cuda] [--no-speak] [--rms-threshold 0.015] [--debug]</code> — <code>--wake</code> sets a wake phrase (empty = respond to everything), <code>--no-speak</code> prints replies instead of speaking them, <code>--rms-threshold</code> raises the VAD sensitivity floor for noisy rooms, <code>--debug</code> prints VAD diagnostics.</li></ul>
+<h3>REPL — <code>/speak</code></h3>
+<p>Inside the interactive REPL, toggle sentence-by-sentence auto-speaking of assistant replies:</p>
+<pre><code class="language-text">/speak on      turn auto-speak ON
+/speak off     turn auto-speak OFF
+/speak         show current state</code></pre>
+<p>Turning it on with no TTS backend present prints an error and leaves it off. When on, each streamed reply is fed to an <code>AutoSpeaker</code> and spoken as complete sentences arrive.</p>
+<h3>Web UI</h3>
+<p>The web UI exposes transcription, not playback. Drop an audio file (<code>.wav</code>, <code>.mp3</code>, <code>.m4a</code>, <code>.ogg</code>) onto the chat; it's uploaded to <code>~/.evi/uploads/&lt;session&gt;/</code> and run through Whisper via the <code>POST /api/transcribe</code> endpoint, which returns the recognized text. This requires the <code>stt</code> extra. TTS engine selection is exposed in the desktop app's <strong>Settings → Voice</strong> screen (or just edit <code>[voice]</code> in the config).</p>
+<h3>Agent tools</h3>
+<p>With <code>[tools] voice = true</code>, the agent can call:</p>
+<ul><li><code>speak_text(text)</code> — speak text aloud (non-blocking, so it doesn't stall the agent loop). Returns <code>"ok"</code> or an error string.</li><li><code>transcribe_microphone(duration=5.0, model="tiny.en")</code> — record from the default mic and transcribe. First call downloads the model.</li></ul>
+<h2>Examples</h2>
+<h3>Example 1 — Speak a line, then transcribe a recording (zero extra setup for TTS)</h3>
+<pre><code class="language-bash"># Check what the system engine resolves to on this machine
+evi voice backend
+# -&gt; windows   (or macos / espeak-ng / espeak / none)
+
+# Speak a sentence with the built-in voice, a little slower
+evi voice speak "Build finished. All tests passed." --rate 140
+
+# See which engines are installed and which one is active
+evi voice engines
+#   system  installed (active)
+#   coqui   not installed
+#   f5      not installed
+#   piper   not installed
+
+# Transcribe 6 seconds from the mic (needs: pip install 'evi-assistant[stt]')
+evi voice listen --duration 6 --model base.en</code></pre>
+<h3>Example 2 — Always-on voice assistant with a wake phrase</h3>
+<pre><code class="language-bash"># Hands-free loop: only acts on utterances containing "evi", speaks replies aloud.
+# Ctrl-C to stop. (STT needs the [stt] extra; TTS uses the system engine here.)
+evi voice loop --wake "evi"
+
+# Quiet testing variant: print replies instead of speaking, with VAD diagnostics
+evi voice loop --no-speak --debug</code></pre>
+<h3>Example 3 — Configure Piper as the TTS engine</h3>
+<p>Piper gives nicer neural voices than the OS default but needs the binary and a voice model. Edit <code>~/.evi/config.toml</code>:</p>
+<pre><code class="language-toml">[voice]
+engine = "piper"
+model  = "/home/me/voices/en_US-amy-medium.onnx"   # required for Piper</code></pre>
+<pre><code class="language-bash">pip install piper-tts          # or install the standalone piper binary
+evi voice speak "Now using Piper for synthesis."</code></pre>
+<h3>Example 4 — Coqui XTTS voice cloning</h3>
+<pre><code class="language-toml">[voice]
+engine       = "coqui"
+clone_sample = "/home/me/voices/my-voice-10s.wav"   # reference audio to clone
+language     = "en"
+# model left blank -&gt; defaults to tts_models/multilingual/multi-dataset/xtts_v2</code></pre>
+<pre><code class="language-bash">pip install coqui-tts
+evi voice speak "This should sound like the reference sample." --engine coqui</code></pre>
+<h2>Notes / limits</h2>
+<ul><li><strong>Fail-open by design.</strong> The <code>AutoSpeaker</code> worker swallows a <code>VoiceError</code> and simply stops speaking rather than crashing your session; the <code>AutoListener</code> likewise logs and skips a failed transcription (only visible with <code>--debug</code>). Missing TTS/STT dependencies surface as clear <code>VoiceError</code> messages with install hints, not stack traces.</li><li><strong><code>--rate</code> is system-engine only.</strong> It's ignored by the coqui/f5/piper engines.</li><li><strong>Piper requires <code>model</code>.</strong> Without <code>[voice] model</code> set to a <code>.onnx</code> path, the Piper engine raises an error. Coqui falls back to the default XTTS model id when <code>model</code> is blank.</li><li><strong>No <code>voice-clone</code> extra exists yet.</strong> Despite the hint in Coqui's error message, install <code>coqui-tts</code> (and <code>f5-tts</code> / <code>piper-tts</code>) directly.</li><li><strong>First STT call is slow.</strong> It downloads the Whisper model (~75 MB for <code>tiny.en</code>) and loads it (1–3 s). Subsequent calls reuse the cached model. Use <code>--device cuda</code> with a CUDA build of CTranslate2 for speed.</li><li><strong>VAD is energy-based.</strong> It works well in a quiet room; in noisy environments raise <code>--rms-threshold</code>. The wake-phrase gate is the main defense against false triggers from background chatter.</li><li><strong>The loop pauses the mic while speaking</strong> so eVi doesn't transcribe its own TTS output and loop on itself — but a <code>--no-speak</code> loop has no such concern.</li><li><strong>Privacy.</strong> With the <code>system</code> engine and local Whisper, no audio or text is sent off the machine. The neural TTS engines may download model weights on first use (Coqui via the HF cache); after that they run locally.</li><li><strong>Linux needs binaries.</strong> The <code>system</code> engine needs <code>espeak-ng</code>/<code>espeak</code>; neural engines also need a WAV player (<code>paplay</code>/<code>aplay</code>/<code>ffplay</code>). Without any of these, <code>evi voice backend</code> reports <code>none</code> and TTS commands exit with an error telling you to install <code>espeak-ng</code>.</li></ul>
+<h3>Relevant source files</h3>
+<ul><li><code>C:\evi\evi\voice.py</code> — <code>speak</code>, <code>synthesize</code>, <code>listen</code>, <code>transcribe_wav</code>, <code>AutoSpeaker</code>, <code>AutoListener</code>, <code>detect_backend</code>, <code>available_engines</code>.</li><li><code>C:\evi\evi\config.py</code> — <code>VoiceSettings</code> (the <code>[voice]</code> keys) and <code>ToolToggles.voice</code>.</li><li><code>C:\evi\evi\tools\voice.py</code> — the <code>speak_text</code> / <code>transcribe_microphone</code> agent tools.</li><li><code>C:\evi\evi\apps\cli\main.py</code> — the <code>evi voice</code> subcommands and the REPL <code>/speak</code> handler.</li><li><code>C:\evi\evi\apps\web\server.py</code> — the <code>POST /api/transcribe</code> endpoint.</li><li><code>C:\evi\pyproject.toml</code> — the <code>[stt]</code> extra.</li></ul>
+    </article>
+    <a class="doc-source" href="https://github.com/evi-assistant/evi-ai/blob/main/docs/features/voice.md">Edit on GitHub ↗</a>
+  </main>
+  <footer class="doc-foot">
+    <a href="index.html">← All documentation</a>
+    <span>eVi — local-first personal AI assistant</span>
+  </footer>
+</body>
+</html>
