@@ -38,7 +38,12 @@ evi --safe-mode web         # same clean boot for the web / desktop UI</code></p
 <pre><code class="language-bash">.venv\Scripts\evi.exe --help</code></pre>
 <h2>"LLM request failed: APIConnectionError"</h2>
 <p>eVi can't reach the backend. Check, in order:</p>
-<ol><li>Is the backend actually running?<ul><li>LM Studio: open the app, Developer tab, <strong>Start Server</strong>.</li><li>Ollama: <code>ollama serve</code> or check <code>sudo systemctl status ollama</code>.</li><li>llama.cpp: <code>llama-server -m &lt;path&gt;</code> must be running.</li></ul></li><li>Is <code>[llm] base_url</code> correct? ```bash evi config show ```</li><li>Can you hit it manually? ```bash curl http://localhost:1234/v1/models   # LM Studio curl http://localhost:11434/api/tags   # Ollama ```</li><li>Are you behind a proxy / VPN that's blocking localhost? Check <code>HTTP_PROXY</code>, <code>HTTPS_PROXY</code>, <code>NO_PROXY</code>.</li></ol>
+<ol><li>Is the backend actually running?<ul><li>LM Studio: open the app, Developer tab, <strong>Start Server</strong>.</li><li>Ollama: <code>ollama serve</code> or check <code>sudo systemctl status ollama</code>.</li><li>llama.cpp: <code>llama-server -m &lt;path&gt;</code> must be running.</li></ul></li><li>Is <code>[llm] base_url</code> correct?</li></ol>
+<pre><code class="language-bash">   evi config show</code></pre>
+<ol><li>Can you hit it manually?</li></ol>
+<pre><code class="language-bash">   curl http://localhost:1234/v1/models   # LM Studio
+   curl http://localhost:11434/api/tags   # Ollama</code></pre>
+<ol><li>Are you behind a proxy / VPN that's blocking localhost? Check <code>HTTP_PROXY</code>, <code>HTTPS_PROXY</code>, <code>NO_PROXY</code>.</li></ol>
 <h2>"The model can't seem to call tools — it just describes them"</h2>
 <p>The model isn't tool-capable, or the temperature is too high.</p>
 <ul><li>Use a tool-tuned model: Qwen2.5 series (especially <strong>14B+</strong>), Hermes-3 on Llama 3.1, Command-R. See [docs/models.md] in the README quick reference.</li><li>Avoid Gemma 2/3 and Phi-4 — their tool calling is hit-or-miss.</li><li>Lower <code>[llm] temperature</code> to 0.3–0.4. The default 0.7 makes tool-call JSON noisy.</li><li>Watch the model's chat template: some GGUF builds have the tool prompt baked wrong. Try a different build from a known-good repacker (bartowski / unsloth on HF).</li></ul>
