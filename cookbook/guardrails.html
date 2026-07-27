@@ -1,0 +1,70 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Guard an agent&#x27;s inputs and outputs — eVi cookbook</title>
+  <meta name="description" content="Guard an agent&#x27;s inputs and outputs — an eVi cookbook recipe." />
+  <link rel="stylesheet" href="../styles.css" />
+  <link rel="stylesheet" href="cookbook.css" />
+  <link rel="icon" href="../favicon.svg" type="image/svg+xml" />
+</head>
+<body>
+  <header class="nav">
+    <a class="brand" href="../index.html" aria-label="eVi home">
+      <span class="brand-mark">e<span class="brand-accent">Vi</span></span>
+    </a>
+    <nav class="nav-links">
+      <a href="index.html">Cookbook</a>
+      <a href="../docs/index.html">Docs</a>
+      <a href="../index.html#download">Download</a>
+      <a class="nav-gh" href="https://github.com/evi-assistant/evi-ai">GitHub ↗</a>
+    </nav>
+  </header>
+  <main class="doc-main">
+    <article class="doc">
+<h1>Guard an agent's inputs and outputs</h1>
+<p>Put safety checks in front of every turn — block secrets before they reach the model, redact PII in both directions, and optionally judge content against a policy — without touching any code.</p>
+<blockquote><p><strong>Uses:</strong> configuration (<code>~/.evi/guardrails.toml</code>) · <strong>Applies to:</strong> the CLI, web, and desktop, and any agent built with <code>build_agent()</code>.</p></blockquote>
+<h2>The three layers</h2>
+<p>Guardrails run in order, and the first block wins:</p>
+<ol><li><strong><code>[[rule]]</code> — regex.</strong> Fast, deterministic, no model. <code>block</code> refuses the turn; <code>redact</code> replaces the match with <code>[REDACTED]</code>.</li><li><strong><code>[[judge]]</code> — LLM-as-judge.</strong> Sends the text to a model with a policy and asks whether it complies. Needs a model; <strong>fails open</strong> (allows) if the model is unavailable, so a judge outage never wedges you.</li><li><strong><code>[[classifier]]</code> — offline ML.</strong> A local moderation model, no network. Needs the <code>moderation</code> extra (<code>pip install evi-assistant[moderation]</code>); also fails open.</li></ol>
+<p>Each rule's <code>applies_to</code> is <code>"input"</code>, <code>"output"</code>, or <code>"both"</code> (the default).</p>
+<h2>A minimal config</h2>
+<p>Copy <a href="https://github.com/evi-assistant/evi-ai/blob/main/examples/guardrails.toml" target="_blank" rel="noopener"><code>examples/guardrails.toml</code></a> to <code>~/.evi/guardrails.toml</code> and trim it to what you need. The regex layer alone is often enough:</p>
+<pre><code class="language-toml"># ~/.evi/guardrails.toml
+enabled = true
+
+[[rule]]
+name = "api-keys"
+pattern = "(api[_-]?key|secret[_-]?key|bearer )\\S+"
+action = "block"
+applies_to = "input"
+
+[[rule]]
+name = "emails"
+pattern = "[\\w.+-]+@[\\w-]+\\.[\\w.-]+"
+action = "redact"
+applies_to = "both"</code></pre>
+<p>With that in place, a prompt containing an API key is refused before it reaches the model, and any email address is <code>[REDACTED]</code> on the way in and on the way out.</p>
+<h2>Adding a policy judge</h2>
+<p>When a pattern can't express the rule — "don't give medical advice", "stay on topic" — add a judge. It costs a model call per checked turn, so scope it with <code>applies_to</code>:</p>
+<pre><code class="language-toml">[[judge]]
+name = "on-topic"
+policy = "The assistant only answers questions about this codebase. Refuse anything else."
+applies_to = "input"</code></pre>
+<p>If the judge model is down, the turn is <strong>allowed</strong> rather than blocked — safety layers here degrade toward availability, so verify with the offline regex layer anything you truly must never let through.</p>
+<h2>Verifying it works</h2>
+<p><code>evi doctor</code> reports whether guardrails loaded and how many rules are active. Then try to trip a rule from <code>evi chat</code> — paste something matching your <code>block</code> pattern and confirm the turn is refused.</p>
+<p>The full field reference (every key, the classifier setup, per-rule options) is in <a href="https://github.com/evi-assistant/evi-ai/blob/main/docs/features/guardrails.md" target="_blank" rel="noopener"><code>docs/features/guardrails.md</code></a>.</p>
+<h2>Where to go next</h2>
+<ul><li><a href="headless-ci-review.html" target="_blank" rel="noopener">Review a pull request in CI</a> — combine guardrails with an unattended run.</li></ul>
+    </article>
+    <a class="doc-source" href="https://github.com/evi-assistant/evi-ai/blob/main/cookbook/guardrails.md">Edit on GitHub ↗</a>
+  </main>
+  <footer class="doc-foot">
+    <a href="index.html">← All recipes</a>
+    <span>eVi — local-first personal AI assistant</span>
+  </footer>
+</body>
+</html>

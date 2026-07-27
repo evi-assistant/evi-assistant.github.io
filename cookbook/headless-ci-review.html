@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Review a pull request in CI — eVi cookbook</title>
+  <meta name="description" content="Review a pull request in CI — an eVi cookbook recipe." />
+  <link rel="stylesheet" href="../styles.css" />
+  <link rel="stylesheet" href="cookbook.css" />
+  <link rel="icon" href="../favicon.svg" type="image/svg+xml" />
+</head>
+<body>
+  <header class="nav">
+    <a class="brand" href="../index.html" aria-label="eVi home">
+      <span class="brand-mark">e<span class="brand-accent">Vi</span></span>
+    </a>
+    <nav class="nav-links">
+      <a href="index.html">Cookbook</a>
+      <a href="../docs/index.html">Docs</a>
+      <a href="../index.html#download">Download</a>
+      <a class="nav-gh" href="https://github.com/evi-assistant/evi-ai">GitHub ↗</a>
+    </nav>
+  </header>
+  <main class="doc-main">
+    <article class="doc">
+<h1>Review a pull request in CI</h1>
+<p>Run eVi headless in a pipeline and fail the build on real findings — either with the built-in reviewer or your own agent.</p>
+<blockquote><p><strong>Uses:</strong> CLI + Python SDK · <strong>You'll need:</strong> eVi installed in the CI job and a model backend it can reach (a local server on the runner, or an OpenAI-compatible endpoint via <code>evi backend add</code>).</p></blockquote>
+<h2>Option A — the built-in reviewer</h2>
+<p><code>evi review</code> diffs your changes, has a model review them, and can turn the verdict into an exit code. That is all you need for a gate:</p>
+<pre><code class="language-bash"># Fail the job if the review verdict is FAIL. --multi runs several lenses.
+evi review --multi --exit-code</code></pre>
+<p>Useful flags:</p>
+<ul><li><code>--staged</code> — review <code>git diff --cached</code> (pre-commit).</li><li><code>--branch main</code> — review this branch against <code>main</code>.</li><li><code>--json</code> — emit <code>{verdict, exit_code, review}</code> for a later step to parse.</li><li><code>--diff-file patch.diff</code> — review a saved patch instead of the working tree.</li></ul>
+<p>A drop-in GitHub Actions workflow is in <a href="https://github.com/evi-assistant/evi-ai/blob/main/examples/github/pr-review.yml" target="_blank" rel="noopener"><code>examples/github/pr-review.yml</code></a>.</p>
+<h2>Option B — your own agent, headless</h2>
+<p>When you want custom logic — post the summary as a PR comment, gate on a specific check — drive an agent yourself. <code>run_headless</code> returns a structured result and <code>to_json</code> serialises it; set the exit code from <code>result.error</code>:</p>
+<pre><code class="language-python">from evi.sdk import build_agent, run_headless, to_json
+
+# Scope the agent to read-only fs + code tools for an unattended run.
+agent = build_agent(tool_categories=["fs", "code"])
+result = run_headless(agent, "Does this diff introduce any obvious bug? Answer with findings.", max_turns=8)
+
+print(to_json(result))          # {"text", "tools", "usage", "error"}
+raise SystemExit(1 if result.error else 0)</code></pre>
+<p>Runnable version: <a href="https://github.com/evi-assistant/evi-ai/blob/main/examples/python/headless_ci.py" target="_blank" rel="noopener"><code>examples/python/headless_ci.py</code></a></p>
+<pre><code class="language-bash">python examples/python/headless_ci.py "Does this repo have a README? Answer yes/no."</code></pre>
+<h2>Keeping CI runs safe and cheap</h2>
+<ul><li><strong>Scope the tools.</strong> <code>tool_categories=["fs", "code"]</code> gives the agent read-only file and search tools — no shell, no writes — which is what an unattended run should have.</li><li><strong>Bound the work.</strong> <code>max_turns=</code> caps how many tool round-trips a single run may take, so a confused model can't loop forever.</li><li><strong>Pick a small model on the runner.</strong> See <a href="run-a-local-model.html" target="_blank" rel="noopener">Run a model on your own hardware</a> — a 7B coder model is plenty for diff review and keeps the job fast.</li></ul>
+<h2>Where to go next</h2>
+<ul><li><a href="guardrails.html" target="_blank" rel="noopener">Guard an agent's inputs and outputs</a> — add input/output safety on top of a headless run.</li></ul>
+    </article>
+    <a class="doc-source" href="https://github.com/evi-assistant/evi-ai/blob/main/cookbook/headless-ci-review.md">Edit on GitHub ↗</a>
+  </main>
+  <footer class="doc-foot">
+    <a href="index.html">← All recipes</a>
+    <span>eVi — local-first personal AI assistant</span>
+  </footer>
+</body>
+</html>

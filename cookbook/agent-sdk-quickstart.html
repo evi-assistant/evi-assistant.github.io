@@ -1,0 +1,75 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Build an agent with the SDK — eVi cookbook</title>
+  <meta name="description" content="Build an agent with the SDK — an eVi cookbook recipe." />
+  <link rel="stylesheet" href="../styles.css" />
+  <link rel="stylesheet" href="cookbook.css" />
+  <link rel="icon" href="../favicon.svg" type="image/svg+xml" />
+</head>
+<body>
+  <header class="nav">
+    <a class="brand" href="../index.html" aria-label="eVi home">
+      <span class="brand-mark">e<span class="brand-accent">Vi</span></span>
+    </a>
+    <nav class="nav-links">
+      <a href="index.html">Cookbook</a>
+      <a href="../docs/index.html">Docs</a>
+      <a href="../index.html#download">Download</a>
+      <a class="nav-gh" href="https://github.com/evi-assistant/evi-ai">GitHub ↗</a>
+    </nav>
+  </header>
+  <main class="doc-main">
+    <article class="doc">
+<h1>Build an agent with the SDK</h1>
+<p>Construct a fully-wired eVi agent in a few lines of Python, run a prompt to completion, then give it a tool of your own.</p>
+<blockquote><p><strong>Uses:</strong> Python SDK (<code>evi.sdk</code>) · <strong>You'll need:</strong> eVi installed (<code>pip install evi-assistant</code>) and a local model backend reachable per <code>~/.evi/config.toml</code> — see <a href="run-a-local-model.html" target="_blank" rel="noopener">Run a model on your own hardware</a>.</p></blockquote>
+<h2>The smallest useful agent</h2>
+<p><code>build_agent()</code> reads your <code>~/.evi/config.toml</code> and wires everything the CLI would: the enabled tools, memory, skills, project context, hooks, and guardrails. <code>run_headless()</code> drives one prompt to completion and hands back the final text plus token usage — no streaming loop to manage.</p>
+<pre><code class="language-python">from evi.sdk import build_agent, run_headless
+
+agent = build_agent()
+result = run_headless(agent, "In one sentence, what is eVi?")
+print(result.text)</code></pre>
+<p>Runnable version: <a href="https://github.com/evi-assistant/evi-ai/blob/main/examples/python/quickstart.py" target="_blank" rel="noopener"><code>examples/python/quickstart.py</code></a></p>
+<pre><code class="language-bash">python examples/python/quickstart.py</code></pre>
+<h2>Give it a custom tool</h2>
+<p>The <code>@tool</code> decorator turns a plain function into a tool. It reads the type hints to build the JSON schema and the first docstring line as the description — you write an ordinary function and hand it to <code>build_agent(tools=[...])</code>.</p>
+<pre><code class="language-python">from evi.sdk import build_agent, run_headless, tool
+
+@tool(category="math", description="Add two integers and return the sum")
+def add(a: int, b: int) -&gt; int:
+    return a + b
+
+agent = build_agent(tools=[add])
+print(run_headless(agent, "What is 12 + 30?").text)</code></pre>
+<p>Passing <code>tools=[...]</code> replaces the default toolset entirely — the agent sees only what you list. To <em>add</em> to the built-ins instead, select categories with <code>build_agent(tool_categories=[...])</code>.</p>
+<p>Runnable version: <a href="https://github.com/evi-assistant/evi-ai/blob/main/examples/python/custom_tool.py" target="_blank" rel="noopener"><code>examples/python/custom_tool.py</code></a></p>
+<h2>Streaming instead of run-to-completion</h2>
+<p>When you want tokens as they arrive — for a UI, or to react to tool calls — iterate <code>agent.chat(...)</code> and match on the event types instead of calling <code>run_headless</code>:</p>
+<pre><code class="language-python">from evi.sdk import build_agent, TextDelta, ToolCall, Done
+
+agent = build_agent()
+for event in agent.chat("Summarise the README in three bullets."):
+    if isinstance(event, TextDelta):
+        print(event.text, end="", flush=True)
+    elif isinstance(event, ToolCall):
+        print(f"\n[calling {event.name}]")
+    elif isinstance(event, Done):
+        break</code></pre>
+<p>Runnable version with the full event set: <a href="https://github.com/evi-assistant/evi-ai/blob/main/examples/python/streaming.py" target="_blank" rel="noopener"><code>examples/python/streaming.py</code></a></p>
+<h2>More SDK recipes</h2>
+<p>The <a href="https://github.com/evi-assistant/evi-ai/blob/main/examples/python" target="_blank" rel="noopener"><code>examples/python/</code></a> directory also has runnable scripts for <strong>structured output</strong> (<code>structured_output.py</code>), <strong>subagents</strong> (<code>subagents.py</code>), and <strong>headless / CI</strong> use (<code>headless_ci.py</code>). The complete API reference is <a href="https://github.com/evi-assistant/evi-ai/blob/main/docs/sdk.md" target="_blank" rel="noopener"><code>docs/sdk.md</code></a>.</p>
+<h2>Where to go next</h2>
+<ul><li><a href="headless-ci-review.html" target="_blank" rel="noopener">Review a pull request in CI</a> — put an agent in a GitHub Action.</li><li><a href="guardrails.html" target="_blank" rel="noopener">Guard an agent's inputs and outputs</a> — add safety layers.</li></ul>
+    </article>
+    <a class="doc-source" href="https://github.com/evi-assistant/evi-ai/blob/main/cookbook/agent-sdk-quickstart.md">Edit on GitHub ↗</a>
+  </main>
+  <footer class="doc-foot">
+    <a href="index.html">← All recipes</a>
+    <span>eVi — local-first personal AI assistant</span>
+  </footer>
+</body>
+</html>

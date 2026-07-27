@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>eVi Cookbook — eVi cookbook</title>
+  <meta name="description" content="eVi Cookbook — an eVi cookbook recipe." />
+  <link rel="stylesheet" href="../styles.css" />
+  <link rel="stylesheet" href="cookbook.css" />
+  <link rel="icon" href="../favicon.svg" type="image/svg+xml" />
+</head>
+<body>
+  <header class="nav">
+    <a class="brand" href="../index.html" aria-label="eVi home">
+      <span class="brand-mark">e<span class="brand-accent">Vi</span></span>
+    </a>
+    <nav class="nav-links">
+      <a href="index.html">Cookbook</a>
+      <a href="../docs/index.html">Docs</a>
+      <a href="../index.html#download">Download</a>
+      <a class="nav-gh" href="https://github.com/evi-assistant/evi-ai">GitHub ↗</a>
+    </nav>
+  </header>
+  <main class="doc-main">
+    <article class="doc">
+<h1>eVi Cookbook</h1>
+<p>Task-focused recipes for <a href="https://github.com/evi-assistant/evi-ai" target="_blank" rel="noopener">eVi</a> — the local-first personal AI assistant. Each recipe is a short, self-contained guide that solves one real problem, with commands and code you can copy and run.</p>
+<p>Unlike an API cookbook, eVi's recipes span three surfaces: the <strong>CLI</strong>, the <strong>Python SDK</strong> (<code>evi.sdk</code>), and <strong>configuration</strong> (<code>~/.evi/config.toml</code> plus a few drop-in files). Each recipe says up front which one it uses.</p>
+<p>Every code sample here is checked against the current release in CI — the build fails if a recipe links to a page or script that does not exist — so what you read matches the eVi you installed. The runnable scripts live in <a href="https://github.com/evi-assistant/evi-ai/blob/main/examples" target="_blank" rel="noopener"><code>examples/</code></a>; recipes point at them rather than duplicating code.</p>
+<h2>Getting started</h2>
+<ul><li><a href="run-a-local-model.html" target="<em>blank" rel="noopener">Run a model on your own hardware</a> — point eVi at a local backend, let it pick a model that fits your machine, and chat. </em>(CLI)*</li><li><a href="agent-sdk-quickstart.html" target="<em>blank" rel="noopener">Build an agent with the SDK</a> — construct an agent in a few lines, give it a custom tool, and run a prompt to completion. </em>(SDK)*</li></ul>
+<h2>Automation</h2>
+<ul><li><a href="headless-ci-review.html" target="<em>blank" rel="noopener">Review a pull request in CI</a> — run eVi headless in GitHub Actions and fail the build on real findings. </em>(CLI + SDK)*</li><li><a href="guardrails.html" target="<em>blank" rel="noopener">Guard an agent's inputs and outputs</a> — layer regex, an LLM judge, and an offline classifier over every turn. </em>(config)*</li></ul>
+<h2>Contributing a recipe</h2>
+<p>A recipe is one Markdown file in this directory. Keep it to a single task, lead with a one-line summary and a <strong>Uses:</strong> line (CLI / SDK / config), and link to a runnable script in <code>examples/</code> rather than pasting a long program inline. Add it to the list above under the right heading — the site build asserts every recipe is linked, so an orphaned file fails CI.</p>
+<p>On merge to <code>main</code>, recipes render to <a href="https://evi-ai.dev/cookbook/" target="_blank" rel="noopener">evi-ai.dev/cookbook</a> automatically. (The GitHub wiki mirrors <code>docs/</code> only; the cookbook lives on the site.)</p>
+    </article>
+    <a class="doc-source" href="https://github.com/evi-assistant/evi-ai/blob/main/cookbook/README.md">Edit on GitHub ↗</a>
+  </main>
+  <footer class="doc-foot">
+    <a href="index.html">← All recipes</a>
+    <span>eVi — local-first personal AI assistant</span>
+  </footer>
+</body>
+</html>

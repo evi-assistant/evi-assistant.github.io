@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Run a model on your own hardware — eVi cookbook</title>
+  <meta name="description" content="Run a model on your own hardware — an eVi cookbook recipe." />
+  <link rel="stylesheet" href="../styles.css" />
+  <link rel="stylesheet" href="cookbook.css" />
+  <link rel="icon" href="../favicon.svg" type="image/svg+xml" />
+</head>
+<body>
+  <header class="nav">
+    <a class="brand" href="../index.html" aria-label="eVi home">
+      <span class="brand-mark">e<span class="brand-accent">Vi</span></span>
+    </a>
+    <nav class="nav-links">
+      <a href="index.html">Cookbook</a>
+      <a href="../docs/index.html">Docs</a>
+      <a href="../index.html#download">Download</a>
+      <a class="nav-gh" href="https://github.com/evi-assistant/evi-ai">GitHub ↗</a>
+    </nav>
+  </header>
+  <main class="doc-main">
+    <article class="doc">
+<h1>Run a model on your own hardware</h1>
+<p>Point eVi at a model running on your own machine — no API key, nothing leaves your disk — and have it recommend one that actually fits your hardware.</p>
+<blockquote><p><strong>Uses:</strong> CLI · <strong>You'll need:</strong> <a href="https://ollama.com" target="_blank" rel="noopener">Ollama</a> or <a href="https://lmstudio.ai" target="_blank" rel="noopener">LM Studio</a> (or any OpenAI-compatible server), and eVi (<code>pip install evi-assistant</code>).</p></blockquote>
+<h2>1. Start a local backend</h2>
+<p>eVi talks to whatever local server you already run. Two common choices:</p>
+<ul><li><strong>Ollama</strong> — serves on <code>http://localhost:11434</code>. <code>ollama serve</code>, then pull a model, e.g. <code>ollama pull qwen2.5-coder:7b</code>.</li><li><strong>LM Studio</strong> — start its local server (default <code>http://localhost:1234</code>) and load a model in the UI.</li></ul>
+<p>eVi auto-detects LM Studio, Ollama, and llama.cpp on their default ports. You do not have to configure anything yet.</p>
+<h2>2. Let eVi pick a model for your machine</h2>
+<p><code>evi models recommend</code> inspects your hardware (RAM, and GPU VRAM if present) and suggests a model that will fit, plus a smaller "fast" model for quick turns:</p>
+<pre><code class="language-bash">evi models recommend</code></pre>
+<p>If you like a suggestion, make it the active model:</p>
+<pre><code class="language-bash">evi models use qwen2.5-coder:7b</code></pre>
+<p><code>evi models list</code> shows every model your backends expose, tagged by source, and <code>evi models active</code> shows the one in use.</p>
+<h2>3. Chat</h2>
+<pre><code class="language-bash">evi chat</code></pre>
+<p>That opens the terminal REPL against your local model. Ask it something, let it use tools, <code>/help</code> lists the slash commands. The same core also powers <code>evi web</code> (a browser UI) and the desktop app — all three share <code>~/.evi/config.toml</code>.</p>
+<h2>Pointing at a specific backend or an OpenAI-compatible server</h2>
+<p>To be explicit rather than relying on auto-detection, register a backend:</p>
+<pre><code class="language-bash"># a local Ollama endpoint
+evi backend add local --kind ollama --base-url http://localhost:11434/v1
+
+# any OpenAI-compatible server (vLLM, llama.cpp, a hosted endpoint)
+evi backend add mybox --kind openai_compat --base-url http://192.168.1.50:8000/v1</code></pre>
+<p>Then <code>evi backend use local</code>. The full list of backend kinds and config keys is in <a href="https://github.com/evi-assistant/evi-ai/blob/main/docs/configuration.md" target="_blank" rel="noopener">Configuration</a>.</p>
+<h2>Where to go next</h2>
+<ul><li><a href="agent-sdk-quickstart.html" target="_blank" rel="noopener">Build an agent with the SDK</a> — drive the same model from Python.</li><li><a href="guardrails.html" target="_blank" rel="noopener">Guard an agent's inputs and outputs</a> — add safety layers.</li></ul>
+    </article>
+    <a class="doc-source" href="https://github.com/evi-assistant/evi-ai/blob/main/cookbook/run-a-local-model.md">Edit on GitHub ↗</a>
+  </main>
+  <footer class="doc-foot">
+    <a href="index.html">← All recipes</a>
+    <span>eVi — local-first personal AI assistant</span>
+  </footer>
+</body>
+</html>
