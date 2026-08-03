@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Give the agent persistent memory — eVi cookbook</title>
+  <meta name="description" content="Give the agent persistent memory — an eVi cookbook recipe." />
+  <link rel="stylesheet" href="../styles.css" />
+  <link rel="stylesheet" href="cookbook.css" />
+  <link rel="icon" href="../favicon.svg" type="image/svg+xml" />
+</head>
+<body>
+  <header class="nav">
+    <a class="brand" href="../index.html" aria-label="eVi home">
+      <span class="brand-mark">e<span class="brand-accent">Vi</span></span>
+    </a>
+    <nav class="nav-links">
+      <a href="index.html">Cookbook</a>
+      <a href="../docs/index.html">Docs</a>
+      <a href="../index.html#download">Download</a>
+      <a class="nav-gh" href="https://github.com/evi-assistant/evi-ai">GitHub ↗</a>
+    </nav>
+  </header>
+  <main class="doc-main">
+    <article class="doc">
+<h1>Give the agent persistent memory</h1>
+<p>Let eVi remember things between sessions — your preferences, project facts, decisions — and pick up durable, per-project context automatically. No custom code: the agent manages memory through its own tools, and project context is a Markdown file you check into the repo.</p>
+<blockquote><p><strong>Uses:</strong> configuration (<code>~/.evi/config.toml</code>) + CLI · <strong>Applies to:</strong> the CLI, web, and desktop — they share one memory store.</p></blockquote>
+<h2>Two mechanisms</h2>
+<ul><li><strong>Memory</strong> — durable notes stored as one Markdown file per topic under <code>~/.evi/memory/</code> (<code>%USERPROFILE%\.evi\memory\</code> on Windows). Survives restarts. The model decides what's worth keeping and writes it itself.</li><li><strong>Project context</strong> — an <code>EVI.md</code> (or <code>AGENTS.md</code>) checked into a repo, loaded into every system prompt while you work in that tree.</li></ul>
+<h2>Memory: how the agent remembers</h2>
+<p>Memory is attached whenever the <code>memory</code> tool toggle is on (the default). The model drives it through five tools — you never call them, you just talk ("remember that I prefer tabs over spaces", "what do you know about project-x?"):</p>
+<table><thead><tr><th>Tool</th><th>What it does</th></tr></thead><tbody><tr><td><code>remember(name, content, tags="")</code></td><td>Save/overwrite a note (same <code>name</code> overwrites).</td></tr><tr><td><code>recall(name)</code></td><td>Return a note's full body.</td></tr><tr><td><code>forget(name)</code></td><td>Soft-delete — moves it to <code>~/.evi/memory/.attic/</code>.</td></tr><tr><td><code>list_memories()</code></td><td>JSON list of <code>{name, summary, tags}</code>.</td></tr><tr><td><code>recall_by_tag(tag)</code></td><td>JSON list of notes carrying a tag.</td></tr></tbody></table>
+<p>Each note is <code>&lt;name&gt;.md</code>; an auto-maintained <code>INDEX.md</code> is folded into the system prompt as a <code>## Memory index</code> block, so the model always knows <em>what</em> is stored and calls <code>recall(name)</code> to pull a full body on demand. Names are <code>[A-Za-z0-9_\-]</code> (max 64 chars) and bodies cap at 64 KB. Because it's plain Markdown you can add or edit files by hand — <code>/reload</code> re-reads them mid-session.</p>
+<p>Memory is on by default. To confirm the toggle, and to keep writes from prompting every turn:</p>
+<pre><code class="language-toml"># ~/.evi/config.toml
+[tools]
+memory = true   # attaches the memory store + tools to the agent
+
+[auto]
+auto_approve = ["fs", "code", "memory", "skills", "image"]   # memory = no prompt</code></pre>
+<h2>Project context: EVI.md / AGENTS.md</h2>
+<p>Scaffold a project-context file in the current directory:</p>
+<pre><code class="language-bash">evi init                 # creates AGENTS.md (the cross-tool standard)
+evi init --name EVI.md   # or eVi's own name; EVI.md wins if both exist</code></pre>
+<p>eVi walks up from your cwd and loads the nearest file, appending it to every system prompt — so you get per-project behavior just by <code>cd</code>-ing in. In a monorepo a root file plus a package-level one are layered (outermost first). Keep it to conventions, where things live, glossary, and hard "don'ts"; it's capped at 64 KB. See <a href="https://github.com/evi-assistant/evi-ai/blob/main/examples/EVI.md" target="_blank" rel="noopener"><code>examples/EVI.md</code></a> for a starter.</p>
+<h2>Curate memory automatically</h2>
+<p>After a stretch of work, have eVi review recent transcripts and prune or update long-term memory for you:</p>
+<pre><code class="language-bash">evi dream --hours 24     # review the last 24h and curate memory</code></pre>
+<p>This needs transcripts enabled (<code>[tools] transcripts = true</code>, the default). Deletions are soft — recoverable from <code>~/.evi/memory/.attic/</code>.</p>
+<p>The full field reference (compaction, per-user isolation, size limits) is in <a href="https://github.com/evi-assistant/evi-ai/blob/main/docs/features/memory-context.md" target="_blank" rel="noopener"><code>docs/features/memory-context.md</code></a>.</p>
+<h2>Where to go next</h2>
+<ul><li><a href="agent-sdk-quickstart.html" target="_blank" rel="noopener">Build an agent with the SDK</a> — <code>build_agent(..., enable_memory=True, enable_project=True)</code> wires both mechanisms into your own agent.</li><li><a href="guardrails.html" target="_blank" rel="noopener">Guard an agent's inputs and outputs</a> — add safety layers on top.</li></ul>
+    </article>
+    <a class="doc-source" href="https://github.com/evi-assistant/evi-ai/blob/main/cookbook/persistent-memory.md">Edit on GitHub ↗</a>
+  </main>
+  <footer class="doc-foot">
+    <a href="index.html">← All recipes</a>
+    <span>eVi — local-first personal AI assistant</span>
+  </footer>
+</body>
+</html>

@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Package and use a skill — eVi cookbook</title>
+  <meta name="description" content="Package and use a skill — an eVi cookbook recipe." />
+  <link rel="stylesheet" href="../styles.css" />
+  <link rel="stylesheet" href="cookbook.css" />
+  <link rel="icon" href="../favicon.svg" type="image/svg+xml" />
+</head>
+<body>
+  <header class="nav">
+    <a class="brand" href="../index.html" aria-label="eVi home">
+      <span class="brand-mark">e<span class="brand-accent">Vi</span></span>
+    </a>
+    <nav class="nav-links">
+      <a href="index.html">Cookbook</a>
+      <a href="../docs/index.html">Docs</a>
+      <a href="../index.html#download">Download</a>
+      <a class="nav-gh" href="https://github.com/evi-assistant/evi-ai">GitHub ↗</a>
+    </nav>
+  </header>
+  <main class="doc-main">
+    <article class="doc">
+<h1>Package and use a skill</h1>
+<p>A skill is a named markdown instruction packet — a review rubric, a house style, a checklist — that the agent loads <em>on demand</em> when a turn calls for it. You write the "how" of a task once; the context window only pays for it when the model actually pulls it in.</p>
+<blockquote><p><strong>Uses:</strong> CLI (<code>evi skill</code>) · config (<code>[tools] skills</code>) · <strong>Ships:</strong> three example skills under <a href="https://github.com/evi-assistant/evi-ai/blob/main/examples/skills" target="_blank" rel="noopener"><code>examples/skills/</code></a>.</p></blockquote>
+<h2>What a <code>SKILL.md</code> looks like</h2>
+<p>A skill is a folder <code>~/.evi/skills/&lt;name&gt;/</code> holding a <code>SKILL.md</code>: optional frontmatter, then a markdown body of instructions the model follows once loaded.</p>
+<pre><code class="language-markdown">---
+name: code-review
+description: Review a diff for correctness, style, and security issues.
+---
+
+# Code review skill
+When asked to review code, follow these steps in order:
+1. Read the diff in full before commenting.
+2. Correctness pass (highest priority): off-by-one, resource leaks, injection …</code></pre>
+<ul><li><strong><code>name</code></strong> (optional) — the skill's id; overrides the folder name. Must match <code>[A-Za-z0-9_-]+</code>.</li><li><strong><code>description</code></strong> — the one-liner shown in the model's skill index, so it can decide whether the skill is relevant. Keep it on <strong>one line</strong> (frontmatter is single-line <code>key: value</code>, not full YAML).</li><li><strong>Body</strong> — everything after the frontmatter. Direct instructions work best: ordered steps, a priority list, an explicit output format.</li></ul>
+<h2>Install one</h2>
+<pre><code class="language-bash">evi skill add &lt;name|git-url|zip-url|dir&gt;   # one line: download (if needed) + import
+evi skill import &lt;dir-or-SKILL.md&gt;         # copy a LOCAL folder into ~/.evi/skills/
+evi skill list                             # what's installed (yours + plugin skills)
+evi skill show &lt;name&gt;                      # print its description, body, bundled files
+evi skill remove &lt;name&gt;                    # delete a user skill</code></pre>
+<p><code>evi skill add</code> is the one-liner: a bare <strong>name</strong> resolves against the skills index (<code>[plugins] index_urls</code> + the local marketplace), while a <strong>git/zip URL or local dir</strong> is installed directly. <code>evi skill import</code> is the local-only copy — add <code>--rewrite-paths</code> to fix relative refs in <code>SKILL.md</code> to absolute installed paths (useful when porting a Claude Agent Skill that leans on companion files). Both take <code>--name</code> and <code>--force</code>.</p>
+<h2>Try the bundled ones</h2>
+<p>The repo ships three ready skills — <code>code-review</code>, <code>sql-explain</code>, and <code>summarize-paper</code>:</p>
+<pre><code class="language-bash">cp -r examples/skills/* ~/.evi/skills/          # all three
+# or bring in just one:
+evi skill import examples/skills/summarize-paper</code></pre>
+<p>See <a href="https://github.com/evi-assistant/evi-ai/blob/main/examples/skills" target="_blank" rel="noopener"><code>examples/skills/</code></a> for the full <code>SKILL.md</code> of each and <a href="https://github.com/evi-assistant/evi-ai/blob/main/examples/README.md" target="_blank" rel="noopener"><code>examples/README.md</code></a> for the rundown.</p>
+<h2>How the agent invokes it</h2>
+<p>Skills are <strong>model-driven</strong> — you don't type them (that's a slash command). Every skill's one-line index (name + description) is injected into the system prompt; when a turn matches, the model calls the <code>invoke_skill(&lt;name&gt;)</code> tool to pull the full body, and you'll see that call in the transcript. To nudge it, just ask: <em>"review the staged diff"</em> with <code>code-review</code> installed, or <em>"use the summarize-paper skill on this PDF"</em>. The <code>SkillStore</code> rescans on every read, so a freshly added skill shows up without a restart (use <code>/reload-skills</code> in a live <code>evi chat</code>).</p>
+<p>The index and the <code>invoke_skill</code> / <code>list_skills</code> tools only appear when the toggle is on (it defaults on):</p>
+<pre><code class="language-toml"># ~/.evi/config.toml
+[tools]
+skills = true      # default; false drops the skill index + invoke_skill tool</code></pre>
+<p>Skills work identically in the CLI, web, and desktop — they're a property of the agent, not the UI. Full reference: <a href="https://github.com/evi-assistant/evi-ai/blob/main/docs/features/skills.md" target="_blank" rel="noopener"><code>docs/features/skills.md</code></a>.</p>
+<h2>Where to go next</h2>
+<ul><li><a href="agent-sdk-quickstart.html" target="_blank" rel="noopener">Build an agent with the SDK</a> — <code>build_agent(..., enable_skills=True)</code> gives a programmatic agent the same skill library.</li><li><a href="headless-ci-review.html" target="_blank" rel="noopener">Review a pull request in CI</a> — point a <code>code-review</code> skill at a diff in an unattended run.</li></ul>
+    </article>
+    <a class="doc-source" href="https://github.com/evi-assistant/evi-ai/blob/main/cookbook/package-and-use-a-skill.md">Edit on GitHub ↗</a>
+  </main>
+  <footer class="doc-foot">
+    <a href="index.html">← All recipes</a>
+    <span>eVi — local-first personal AI assistant</span>
+  </footer>
+</body>
+</html>

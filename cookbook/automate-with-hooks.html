@@ -1,0 +1,75 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Automate with hooks — eVi cookbook</title>
+  <meta name="description" content="Automate with hooks — an eVi cookbook recipe." />
+  <link rel="stylesheet" href="../styles.css" />
+  <link rel="stylesheet" href="cookbook.css" />
+  <link rel="icon" href="../favicon.svg" type="image/svg+xml" />
+</head>
+<body>
+  <header class="nav">
+    <a class="brand" href="../index.html" aria-label="eVi home">
+      <span class="brand-mark">e<span class="brand-accent">Vi</span></span>
+    </a>
+    <nav class="nav-links">
+      <a href="index.html">Cookbook</a>
+      <a href="../docs/index.html">Docs</a>
+      <a href="../index.html#download">Download</a>
+      <a class="nav-gh" href="https://github.com/evi-assistant/evi-ai">GitHub ↗</a>
+    </nav>
+  </header>
+  <main class="doc-main">
+    <article class="doc">
+<h1>Automate with hooks</h1>
+<p>Run your own command — or fire an HTTP webhook — automatically at key moments while eVi works: around every tool call, and at three points in a turn. A hook can just observe (audit a log, POST to Slack) or it can <em>veto</em> — block a tool, reject a prompt, or skip compaction — all without touching eVi's source.</p>
+<blockquote><p><strong>Uses:</strong> config (<code>~/.evi/hooks.toml</code>) · <strong>Applies to:</strong> the CLI, web, and desktop, and any headless / workflow run — they all load the same registry.</p></blockquote>
+<h2>The seven events</h2>
+<p>A hook is an entry in <code>hooks.toml</code> keyed by the event it fires on. Get the name exactly right: the loader <strong>silently skips</strong> an entry under an unknown event, so a typo like <code>[[before_toolcall]]</code> looks fine but never fires.</p>
+<table><thead><tr><th>Event</th><th>Fires</th><th>Can veto?</th></tr></thead><tbody><tr><td><code>before_tool_call</code></td><td>before a tool runs</td><td>yes — blocks the tool</td></tr><tr><td><code>after_tool_call</code></td><td>after a tool returns</td><td>no (notification only)</td></tr><tr><td><code>user_prompt_submit</code></td><td>before each turn, before the model sees the prompt</td><td>yes — blocks the prompt</td></tr><tr><td><code>before_compact</code></td><td>before history compaction</td><td>yes — keeps history intact</td></tr><tr><td><code>stop</code></td><td>after a turn completes</td><td>no (notification only)</td></tr><tr><td><code>session_start</code></td><td>when an interactive session begins (setup)</td><td>no (notification only)</td></tr><tr><td><code>session_end</code></td><td>when an interactive session ends (teardown)</td><td>no (notification only)</td></tr></tbody></table>
+<p>The first two are <strong>tool-scoped</strong>: their <code>match</code> is a glob over the tool name (<code>"*"</code>, <code>write_file</code>, <code>fs.*</code>). The five lifecycle events aren't tied to a tool, so they use <code>match = "*"</code>.</p>
+<h2>A real hooks.toml</h2>
+<p>Copy <a href="https://github.com/evi-assistant/evi-ai/blob/main/examples/hooks.toml" target="_blank" rel="noopener"><code>examples/hooks.toml</code></a> to <code>~/.evi/hooks.toml</code> (Windows: <code>%USERPROFILE%\.evi\hooks.toml</code>) and trim it. The feature is always on — it's driven entirely by that file's presence, no config flag, no pip extra.</p>
+<pre><code class="language-toml"># ~/.evi/hooks.toml
+
+# Audit every tool call to a log.
+[[before_tool_call]]
+name    = "audit"
+match   = "*"
+command = ["bash", "-c", "echo $EVI_HOOK_TOOL $EVI_HOOK_ARGS_JSON &gt;&gt; ~/.evi/logs/tools.log"]
+timeout = 5
+
+# Block writes outside the home directory (veto).
+[[before_tool_call]]
+name            = "no-system-writes"
+match           = "write_file"
+command         = ["python3", "-c", "import os,sys,json; a=json.loads(os.environ['EVI_HOOK_ARGS_JSON']); p=os.path.realpath(a.get('path','')); sys.exit(0 if p.startswith(os.path.expanduser('~')) else 1)"]
+veto_on_nonzero = true
+
+# Notify an external service when a turn finishes (veto ignored on `stop`).
+[[stop]]
+name = "turn-done-webhook"
+match = "*"
+url  = "https://example.com/evi-hook"</code></pre>
+<p>Each entry sets <strong>either</strong> <code>command</code> (an argv list eVi spawns — <strong>not</strong> shell-evaluated; use <code>["bash", "-c", "…"]</code> for pipes or <code>$VAR</code>) <strong>or</strong> <code>url</code> (eVi POSTs JSON itself). A <code>command</code> hook inherits <code>EVI_HOOK_EVENT</code>, <code>EVI_HOOK_TOOL</code>, and <code>EVI_HOOK_ARGS_JSON</code> in its environment (plus <code>EVI_HOOK_RESULT</code> on <code>after_tool_call</code>).</p>
+<h2>Vetoing</h2>
+<p>Veto only applies to the three vetoable events, and only when the entry sets <code>veto_on_nonzero = true</code>. Such a hook that exits non-zero (or, for a <code>url</code> hook, returns a <code>4xx</code>/<code>5xx</code>) blocks the action; for a tool, the model sees a <code>BLOCKED BY HOOK '&lt;name&gt;': &lt;stderr&gt;</code> result. A timeout counts as non-zero and blocks too — keep guard hooks fast and set a tight <code>timeout</code> (default <code>30.0</code>s).</p>
+<h2>Verifying it fires</h2>
+<p>Hooks load once at process start, so <strong>restart after editing</strong>. Then inspect without running anything:</p>
+<pre><code class="language-bash">evi hooks path                 # print the config file path
+evi hooks list                 # every loaded hook, grouped by event
+evi hooks test write_file      # which hooks WOULD fire for a tool name</code></pre>
+<p><code>hooks test</code> is match-resolution only — it flags the hooks whose glob hits the name (and which can veto) without executing them. If a hook you wrote is missing from <code>hooks list</code>, suspect a mistyped event name first. The web/desktop <strong>Settings → Hooks</strong> editor validates the whole file on save and catches those typos before writing.</p>
+<h2>Where to go next</h2>
+<ul><li><a href="guardrails.html" target="_blank" rel="noopener">Guard an agent's inputs and outputs</a> — a purpose-built policy layer (regex / judge / classifier) that complements a <code>user_prompt_submit</code> hook.</li><li><a href="headless-ci-review.html" target="_blank" rel="noopener">Review a pull request in CI</a> — hooks fire in headless runs too, so the same audit and guard rules apply unattended.</li></ul>
+    </article>
+    <a class="doc-source" href="https://github.com/evi-assistant/evi-ai/blob/main/cookbook/automate-with-hooks.md">Edit on GitHub ↗</a>
+  </main>
+  <footer class="doc-foot">
+    <a href="index.html">← All recipes</a>
+    <span>eVi — local-first personal AI assistant</span>
+  </footer>
+</body>
+</html>

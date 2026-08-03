@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Get structured JSON output — eVi cookbook</title>
+  <meta name="description" content="Get structured JSON output — an eVi cookbook recipe." />
+  <link rel="stylesheet" href="../styles.css" />
+  <link rel="stylesheet" href="cookbook.css" />
+  <link rel="icon" href="../favicon.svg" type="image/svg+xml" />
+</head>
+<body>
+  <header class="nav">
+    <a class="brand" href="../index.html" aria-label="eVi home">
+      <span class="brand-mark">e<span class="brand-accent">Vi</span></span>
+    </a>
+    <nav class="nav-links">
+      <a href="index.html">Cookbook</a>
+      <a href="../docs/index.html">Docs</a>
+      <a href="../index.html#download">Download</a>
+      <a class="nav-gh" href="https://github.com/evi-assistant/evi-ai">GitHub ↗</a>
+    </nav>
+  </header>
+  <main class="doc-main">
+    <article class="doc">
+<h1>Get structured JSON output</h1>
+<p>Force the model to return JSON that matches a schema you supply — named fields, types, required keys — so a script downstream can parse the reply reliably instead of hoping the prose happens to be valid JSON.</p>
+<blockquote><p><strong>Uses:</strong> Python SDK (<code>evi.sdk</code>) + CLI (<code>evi run --schema</code>, or <code>/schema</code> in the REPL) · <strong>You'll need:</strong> eVi installed and a backend that supports OpenAI-style <code>response_format</code> (OpenAI, LM Studio, recent llama.cpp / Ollama).</p></blockquote>
+<h2>Schema vs. "just JSON"</h2>
+<p>eVi's <code>/json</code> forces the model to return <em>some</em> JSON object. <strong>Structured Outputs</strong> go further: they constrain the reply to a <em>specific</em> JSON Schema. A bare schema is wrapped into the OpenAI-style envelope the agent already forwards to the backend:</p>
+<pre><code class="language-json">{ "type": "json_schema",
+  "json_schema": { "name": "output", "schema": { ... }, "strict": true } }</code></pre>
+<p>Backends that support this honor it; others fall back to best-effort JSON — eVi never hard-fails on an unsupporting backend.</p>
+<h2>From the SDK</h2>
+<p>Two helpers do the work: <code>load_schema()</code> reads a schema from a file path <em>or</em> an inline JSON string, and <code>as_response_format()</code> wraps it into the envelope above. Pass the result to <code>run_headless(..., response_format=...)</code>:</p>
+<pre><code class="language-python">import json
+from evi.sdk import as_response_format, build_agent, run_headless
+
+SCHEMA = {
+    "type": "object",
+    "properties": {"name": {"type": "string"}, "email": {"type": "string"}},
+    "required": ["name", "email"],
+    "additionalProperties": False,
+}
+
+agent = build_agent(tools=[])              # no tools for a pure extraction task
+rf = as_response_format(SCHEMA, name="contact")
+result = run_headless(agent, "Extract: Jane Doe, jane@acme.io", response_format=rf)
+data = json.loads(result.text)             # matches SCHEMA
+print(data)</code></pre>
+<p><code>as_response_format(schema, *, name="output", strict=True)</code> does <strong>not</strong> double-wrap: if you already hand it a full <code>{"type": "json_schema", ...}</code> envelope or a <code>{"name", "schema"}</code> pair, it respects that as-is. Use <code>load_schema("contact.json")</code> in place of the inline dict to read from a file.</p>
+<p>Runnable version: <a href="https://github.com/evi-assistant/evi-ai/blob/main/examples/python/structured_output.py" target="_blank" rel="noopener"><code>examples/python/structured_output.py</code></a></p>
+<pre><code class="language-bash">python examples/python/structured_output.py</code></pre>
+<h2>From the CLI</h2>
+<p><code>evi run</code> takes a <code>--schema</code> flag — a file path or inline JSON — and <code>--format json</code> prints the full <code>{text, tools, usage, error}</code> envelope:</p>
+<pre><code class="language-bash">echo "Jane Doe, VP Engineering, jane@acme.io" | \
+  evi run "Extract the contact fields from this signature." \
+  --schema contact.json --format json</code></pre>
+<p><code>--schema</code> also accepts inline JSON directly (handy for a one-off enum classification), and the prompt can be a positional argument or piped on stdin. A bad schema prints <code>error: ...</code> to stderr and exits <strong>2</strong>. Inside the REPL, <code>/schema &lt;file|inline-json&gt; [prompt]</code> constrains the next turn (with no prompt it arms the schema for your next message); <code>/schema off</code> clears it.</p>
+<h2>Notes</h2>
+<ul><li><strong>Enforcement is backend-dependent.</strong> Only backends that support <code>response_format</code> <em>guarantee</em> the shape; others return best-effort JSON, so tolerate the occasional non-conforming reply against those.</li><li>To control <code>strict</code> or the schema <code>name</code>, pass the full envelope yourself — <code>as_response_format</code> leaves richer forms untouched.</li></ul>
+<p>The full field reference lives in <a href="https://github.com/evi-assistant/evi-ai/blob/main/docs/features/structured-and-batch.md" target="_blank" rel="noopener"><code>docs/features/structured-and-batch.md</code></a>, which also covers running many schema-constrained extractions at once with <code>evi batch</code>.</p>
+<h2>Where to go next</h2>
+<ul><li><a href="agent-sdk-quickstart.html" target="_blank" rel="noopener">Build an agent with the SDK</a> — the <code>build_agent</code> / <code>run_headless</code> basics this recipe builds on.</li><li><a href="headless-ci-review.html" target="_blank" rel="noopener">Review a pull request in CI</a> — feed the JSON envelope into an unattended job.</li></ul>
+    </article>
+    <a class="doc-source" href="https://github.com/evi-assistant/evi-ai/blob/main/cookbook/structured-json-output.md">Edit on GitHub ↗</a>
+  </main>
+  <footer class="doc-foot">
+    <a href="index.html">← All recipes</a>
+    <span>eVi — local-first personal AI assistant</span>
+  </footer>
+</body>
+</html>

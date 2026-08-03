@@ -1,0 +1,70 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Delegate to another machine on your LAN — eVi cookbook</title>
+  <meta name="description" content="Delegate to another machine on your LAN — an eVi cookbook recipe." />
+  <link rel="stylesheet" href="../styles.css" />
+  <link rel="stylesheet" href="cookbook.css" />
+  <link rel="icon" href="../favicon.svg" type="image/svg+xml" />
+</head>
+<body>
+  <header class="nav">
+    <a class="brand" href="../index.html" aria-label="eVi home">
+      <span class="brand-mark">e<span class="brand-accent">Vi</span></span>
+    </a>
+    <nav class="nav-links">
+      <a href="index.html">Cookbook</a>
+      <a href="../docs/index.html">Docs</a>
+      <a href="../index.html#download">Download</a>
+      <a class="nav-gh" href="https://github.com/evi-assistant/evi-ai">GitHub ↗</a>
+    </nav>
+  </header>
+  <main class="doc-main">
+    <article class="doc">
+<h1>Delegate to another machine on your LAN</h1>
+<p>Keep a small, fast model for everyday chat on your laptop, and hand the heavy turns to a bigger eVi running on a GPU box down the hall — no cloud, no shared account, just two eVi instances talking over your LAN.</p>
+<blockquote><p><strong>Uses:</strong> config (<code>[tools] federation</code>, <code>[federation] serve</code>, <code>~/.evi/peers.json</code>) · CLI (<code>evi peer …</code>) · <strong>two machines</strong> on one trusted network.</p></blockquote>
+<h2>How it works</h2>
+<p>Your laptop POSTs a self-contained task to the peer's <code>/api/federate</code> endpoint; the peer runs it on its own agent and returns the answer text. Transport is plain HTTP with the peer's existing web bearer token — there's no separate trust model and no TLS, so keep peers on a LAN or VPN. Federation is <strong>opt-in on both ends</strong>: the caller enables a tool, the responder opts in to serving.</p>
+<h2>On the big box (the one doing the work)</h2>
+<p>Turn on serving and bind the web server to the LAN so peers can actually reach it:</p>
+<pre><code class="language-toml"># ~/.evi/config.toml
+[web]
+auth_token = "…"      # you're on the LAN now — require a token (evi web-config token rotate)
+
+[federation]
+serve = true          # answer POST /api/federate for trusted peers (403 otherwise)</code></pre>
+<pre><code class="language-bash">evi web --host 0.0.0.0 --port 8473   # bind the LAN on the federation port</code></pre>
+<p><code>evi web</code> defaults to <code>127.0.0.1:8000</code>, so both flags matter: <code>--host 0.0.0.0</code> to leave loopback, and <code>--port 8473</code> because that's the port peers scan and the <code>http://gpu-box:8473</code> URL below points at. Then <strong>open port <code>8473</code> through the firewall</strong>. A served task runs non-interactively and is <strong>deny-by-default for tools</strong> — the peer's agent refuses any tool not already auto-approved, so delegation can't quietly trigger a shell or network tool on the remote box.</p>
+<h2>On the small box (the one delegating)</h2>
+<p>Enable the <code>delegate_peer</code> tool and register the peer:</p>
+<pre><code class="language-toml"># ~/.evi/config.toml
+[tools]
+federation = true     # enables the delegate_peer tool (off by default)</code></pre>
+<pre><code class="language-bash">evi peer add gpu http://gpu-box:8473 --token &lt;big-box web token&gt;
+evi peer list         # shows live reachability + the peer's eVi version/model</code></pre>
+<p>Prefer a file? Copy <a href="https://github.com/evi-assistant/evi-ai/blob/main/examples/peers.json" target="_blank" rel="noopener"><code>examples/peers.json</code></a> to <code>~/.evi/peers.json</code> and fill in each <code>name</code> / <code>url</code> / <code>token</code> (<code>token</code> is optional if the peer needs no auth).</p>
+<h2>Delegate a task</h2>
+<p>From the CLI, one shot:</p>
+<pre><code class="language-bash">evi peer run gpu "Summarize the architecture of /srv/project and list its top 5 risks."</code></pre>
+<p>From a chat, with the tool on, the model calls <code>delegate_peer(peer, task)</code> itself (and <code>list_peers</code> first, to pick the peer whose model fits the job — e.g. route a vision task to the peer whose model has vision).</p>
+<h2>Discover peers on the network</h2>
+<pre><code class="language-bash">evi peer scan            # sweep the local /24 for running eVi instances (~1-2 s)
+evi peer scan --port 8000</code></pre>
+<p>If a scan finds nothing with the firewall open, the peer is almost certainly bound to <code>127.0.0.1</code> only — relaunch it with <code>evi web --host 0.0.0.0 --port 8473</code>. <code>evi peer scan</code> warns you when <strong>this</strong> machine has that problem.</p>
+<h2>Distribute a whole task list</h2>
+<p>Once peers are registered, <code>evi team run --peers</code> (alias <code>--distribute</code>) fans a shared task list across reachable peers <strong>plus</strong> local — real cross-machine parallelism instead of teammates serialising on one GPU. A peer that drops mid-run falls back to running its task locally, so the team never stalls.</p>
+<p>The full field reference (serving, A2A, the Peers panel, security notes) is in <a href="https://github.com/evi-assistant/evi-ai/blob/main/docs/features/agents.md" target="_blank" rel="noopener"><code>docs/features/agents.md</code></a>.</p>
+<h2>Where to go next</h2>
+<ul><li><a href="run-a-local-model.html" target="_blank" rel="noopener">Run a local model</a> — set up the small, fast model your laptop keeps for everyday chat.</li><li><a href="guardrails.html" target="_blank" rel="noopener">Guard an agent's inputs and outputs</a> — add safety checks before work leaves your machine.</li></ul>
+    </article>
+    <a class="doc-source" href="https://github.com/evi-assistant/evi-ai/blob/main/cookbook/delegate-to-another-machine.md">Edit on GitHub ↗</a>
+  </main>
+  <footer class="doc-foot">
+    <a href="index.html">← All recipes</a>
+    <span>eVi — local-first personal AI assistant</span>
+  </footer>
+</body>
+</html>

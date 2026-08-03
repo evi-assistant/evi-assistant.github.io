@@ -1,0 +1,92 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Fan work out across subagents — eVi cookbook</title>
+  <meta name="description" content="Fan work out across subagents — an eVi cookbook recipe." />
+  <link rel="stylesheet" href="../styles.css" />
+  <link rel="stylesheet" href="cookbook.css" />
+  <link rel="icon" href="../favicon.svg" type="image/svg+xml" />
+</head>
+<body>
+  <header class="nav">
+    <a class="brand" href="../index.html" aria-label="eVi home">
+      <span class="brand-mark">e<span class="brand-accent">Vi</span></span>
+    </a>
+    <nav class="nav-links">
+      <a href="index.html">Cookbook</a>
+      <a href="../docs/index.html">Docs</a>
+      <a href="../index.html#download">Download</a>
+      <a class="nav-gh" href="https://github.com/evi-assistant/evi-ai">GitHub ↗</a>
+    </nav>
+  </header>
+  <main class="doc-main">
+    <article class="doc">
+<h1>Fan work out across subagents</h1>
+<p>Instead of answering a hard task in one pass — or grinding through a batch of independent tasks one at a time — spread the work across several scoped agents that run concurrently, then collect the results.</p>
+<blockquote><p><strong>Uses:</strong> CLI (<code>evi ultracode</code>, <code>/ultra</code>) · Python SDK (<code>evi.sdk</code>) · config (<code>[ultracode]</code> in <code>~/.evi/config.toml</code>)</p></blockquote>
+<h2>Two shapes of fan-out</h2>
+<p>eVi has two, and they solve different problems:</p>
+<ul><li><strong>Many tasks, one agent each</strong> — <code>run_subagents_parallel</code> runs a <em>list of different tasks</em>, each in its own one-shot agent with a scoped toolset, and returns the results in input order. This is map/reduce over prompts.</li><li><strong>One hard task, many angles</strong> — <strong>ultracode</strong> takes a <em>single</em> task and runs it through a fixed pipeline: <code>decompose → fan out N solvers (diverse angles) → adversarial verify → synthesize</code>. This is depth on one problem.</li></ul>
+<h2>Ultracode from the CLI</h2>
+<p>Point it at one genuinely hard task and it prints each stage as it runs, then the final answer:</p>
+<pre><code class="language-bash">evi ultracode "refactor the auth module to remove duplicated token parsing, add tests"
+evi ultracode "design a retry policy for the HTTP client" --breadth 4 --rounds 2
+evi ultracode "&lt;task&gt;" --json      # full result incl. every stage's output</code></pre>
+<p><code>--breadth/-b</code> sets the number of parallel solver angles, <code>--rounds/-r</code> the verify→refine cycles (<code>0</code> skips the critic), and <code>--mode/-m</code> the solver toolset (<code>chat | cowork | code</code>). A default run is ~8 model calls; start cheap with <code>--breadth 1 --rounds 0</code> to gauge cost.</p>
+<p>In the REPL, <code>/ultra &lt;task&gt;</code> runs one turn through the pipeline, bare <code>/ultra</code> toggles it session-wide, and <code>/effort ultracode</code> auto-runs every substantive turn through it (Claude-parity).</p>
+<h2>Routing the fan-out to a cheaper model</h2>
+<p>The N parallel solvers are the expensive part; the critic and synthesizer are where quality is won. Keep those sharp and send just the solvers to a small model:</p>
+<pre><code class="language-bash">evi ultracode "&lt;task&gt;" --cheap-fanout                # solvers → [llm] fast_model
+evi ultracode "&lt;task&gt;" --solver-model qwen2.5:3b     # solvers → an explicit model
+evi ultracode "&lt;task&gt;" --synth-model qwen2.5-coder:14b</code></pre>
+<h2>Tuning the defaults</h2>
+<p>Set them once under <code>[ultracode]</code> so every surface inherits them:</p>
+<pre><code class="language-toml">[ultracode]
+breadth = 3          # parallel solver angles (1 disables fan-out)
+rounds = 1           # verify-&gt;refine cycles (0 skips critique)
+mode = "code"        # solver toolset: chat | cowork | code
+max_workers = 4      # cap on concurrent stage agents
+auto_tune = true     # downshift breadth/rounds for tiny / short-context models
+cheap_fanout = false # run solvers on [llm] fast_model (critic/synth stay on main)</code></pre>
+<p>The full knob list is in <a href="https://github.com/evi-assistant/evi-ai/blob/main/docs/features/ultracode.md" target="_blank" rel="noopener"><code>docs/features/ultracode.md</code></a>.</p>
+<h2>From the SDK: independent tasks</h2>
+<p>For the map/reduce shape, hand a list of tasks to <code>run_subagents_parallel</code>. Each gets its own agent, and you choose which tool <em>categories</em> it may touch (<code>()</code> = none). See <a href="https://github.com/evi-assistant/evi-ai/blob/main/examples/python/subagents.py" target="_blank" rel="noopener"><code>examples/python/subagents.py</code></a>:</p>
+<pre><code class="language-python">from evi.sdk import run_subagents_parallel
+
+results = run_subagents_parallel(
+    ["Summarise a JWT.", "Summarise a UUID.", "Summarise a bloom filter."],
+    system_prompt="You are a terse technical explainer.",
+    tool_categories=(),      # no tools: pure explanation
+    max_workers=3,
+)
+for task, answer in results:   # returned in input order
+    print(task, "-&gt;", answer)</code></pre>
+<h2>From the SDK: the full pipeline</h2>
+<p>To drive the ultracode pipeline yourself, wrap <code>build_agent</code> in a factory, build a <code>run_one</code> with <code>make_runner</code>, and pass it to <code>run_ultracode</code>:</p>
+<pre><code class="language-python">from evi.sdk import build_agent, make_runner, run_ultracode, UltraConfig
+
+def factory(system_prompt, model=None):
+    return build_agent(system_prompt=system_prompt, model=model)
+
+run_one = make_runner(factory)
+res = run_ultracode(
+    "design a retry policy for the HTTP client",
+    run_one=run_one,
+    cfg=UltraConfig(breadth=4, rounds=2),
+)
+print(res.answer)
+for stage in res.stages:       # decompose / solve / verify / synthesize
+    print(stage.name, stage.label)</code></pre>
+<h2>Where to go next</h2>
+<ul><li><a href="agent-sdk-quickstart.html" target="_blank" rel="noopener">Build an agent with the SDK</a> — the <code>build_agent</code> / <code>run_headless</code> basics the pipeline factory builds on.</li><li><a href="guardrails.html" target="_blank" rel="noopener">Guard an agent's inputs and outputs</a> — safety checks that wrap every stage the fan-out spawns.</li></ul>
+    </article>
+    <a class="doc-source" href="https://github.com/evi-assistant/evi-ai/blob/main/cookbook/multi-agent-with-ultracode.md">Edit on GitHub ↗</a>
+  </main>
+  <footer class="doc-foot">
+    <a href="index.html">← All recipes</a>
+    <span>eVi — local-first personal AI assistant</span>
+  </footer>
+</body>
+</html>
