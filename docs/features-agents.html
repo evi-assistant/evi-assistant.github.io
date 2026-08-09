@@ -116,8 +116,11 @@ evi workflow run &lt;name&gt; [--var k=v ...] [--json]</code></pre>
 evi peer add &lt;name&gt; &lt;url&gt; [--token …] [--overwrite]
 evi peer remove &lt;name&gt;
 evi peer scan [--port N]           # sweep the local /24 for running eVi instances
-evi peer run &lt;name&gt; "&lt;task&gt;"       # delegate a task to a peer and print its answer</code></pre>
+evi peer run &lt;name&gt; "&lt;task&gt;"       # delegate a task to a peer and print its answer
+evi peer doctor [--fast]           # PREFLIGHT: serving/token posture + per-peer reachability,
+                                   #   auth, and a real test delegation, with fix-it hints</code></pre>
 <p>The <code>delegate_peer(peer, task)</code> tool does the same from inside a chat when the <code>federation</code> tool toggle is on.</p>
+<p><strong><code>evi peer doctor</code></strong> (and the <strong>Run federation preflight</strong> button in the Peers panel) is the fastest way to find out why federation isn't working. It checks: whether this node is serving and reachable on the LAN (vs loopback-only); whether <code>[web] auth_token</code> is set when LAN-bound (required, or the fail-safe refuses all peers); and, for each configured peer, reachability, whether its token is accepted, and whether a real test delegation completes — telling apart the common failures (peer's <code>serve</code> off, missing/mismatched token, or simply a too-slow peer) with the exact fix for each.</p>
 <h3>Web / Desktop — the Peers panel</h3>
 <p><strong>Settings → Peers</strong> manages federation without the CLI:</p>
 <ul><li>lists configured peers with a live status dot (green = reachable, with the peer's eVi version + active model from its <code>/api/health</code>; red = unreachable — machine off or <code>evi web</code> not running);</li><li>shows whether <strong>this</strong> instance is serving federation requests (<code>[federation] serve</code>);</li><li>an add-peer form (name / URL / optional token) and per-peer <strong>Remove</strong>;</li><li><strong>Scan local network</strong> — probes your /24 for eVi instances on port 8473 (raw-socket connect, then an <code>/api/health</code> fingerprint so a random web server isn't mistaken for a peer; ~2 s). Hits show host, version, and model, with a one-click <strong>Add</strong>; already-configured peers are marked.</li></ul>
