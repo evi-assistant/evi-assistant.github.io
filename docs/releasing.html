@@ -26,15 +26,16 @@
 <h1>Releasing</h1>
 <p>How to cut a new version of eVi.</p>
 <h2>One-time setup</h2>
-<ol><li><strong>PyPI Trusted Publishing.</strong> On https://pypi.org → Manage → Publishing, add a pending publisher for the <strong><code>evi-assistant</code></strong> distribution (the import package and CLI stay <code>evi</code>; only the PyPI name is <code>evi-assistant</code>) pointing at this repo's <code>release.yml</code> workflow. No API tokens required.</li><li><strong>Docker Hub / GHCR (optional).</strong> If you want to push the image too, add <code>DOCKER_USERNAME</code> / <code>DOCKER_TOKEN</code> secrets and a job to <code>release.yml</code> (not enabled by default — see <em>Roadmap</em> below).</li></ol>
+<ol><li><strong>PyPI Trusted Publishing.</strong> On https://pypi.org → Manage → Publishing, add a pending publisher for the <strong><code>evi-assistant</code></strong> distribution (the import package and CLI stay <code>evi</code>; only the PyPI name is <code>evi-assistant</code>) pointing at this repo's <code>release.yml</code> workflow. No API tokens required.</li><li><strong>GHCR.</strong> The container image is pushed to <code>ghcr.io/&lt;owner&gt;/&lt;repo&gt;</code> with the workflow's own <code>GITHUB_TOKEN</code> (<code>packages: write</code>); no secret to add. Docker Hub is not wired up.</li><li><strong>Labels and branch protection (admin).</strong> Create the <code>docs-skip</code> label (see <a href="https://github.com/evi-assistant/evi-ai/blob/main/TESTING.md#ci-gates" target="_blank" rel="noopener">TESTING.md → CI gates</a>) and, if you want them to block merges, add these checks to branch protection: <code>actionlint</code>, <code>workflow injection (zizmor + strict check)</code>, <code>docs freshness</code>, <code>cargo check + test (desktop shell, Windows)</code> and <code>playwright UI e2e</code>.</li></ol>
 <h2>Cutting a release</h2>
 <pre><code class="language-bash"># 1. Bump the version in two places (they're tripwired by the release CI):
 #      pyproject.toml → [project] version
 #      evi/__init__.py → __version__
 #
-# 2. Update CHANGELOG.md — add a section under the new version with the
-#    notable changes. Phase memory ($CLAUDE_HOME/.claude/.../project_evi.md)
-#    is a good source of truth.
+# 2. Update CHANGELOG.md — turn `## [Unreleased]` into the new version's
+#    entry, exactly `## [0.8.0] — YYYY-MM-DD` (an em dash, and the date you
+#    tag, within a day), and leave an empty `## [Unreleased]` above it. The
+#    release refuses a tag whose version isn't the newest entry.
 #
 # 3. Commit, tag, push.
 git add pyproject.toml evi/__init__.py CHANGELOG.md
@@ -42,14 +43,22 @@ git commit -m "release: 0.8.0"
 git tag v0.8.0
 git push origin main --tags</code></pre>
 <p>The <code>release.yml</code> workflow:</p>
-<ol><li>Verifies the git tag matches <strong>both</strong> <code>pyproject.toml</code>'s version and <code>evi/__init__.py</code>'s <code>__version__</code> (fails on any drift).</li><li>Installs the package + all useful extras.</li><li>Runs the full test suite.</li><li>Builds sdist + wheel via <code>python -m build</code>.</li><li>Publishes to PyPI via Trusted Publishing (OIDC — no API token).</li><li>Keyless (OIDC) sigstore-signs the artifacts and creates a GitHub release with auto-generated notes + attached artifacts (wheel/sdist + <code>*.sigstore.json</code>).</li></ol>
+<ol><li>Runs the browser e2e suite (<code>e2e.yml</code>, called as a job). Nothing below runs unless it passes: 1.0.49 reached PyPI with a dead button because the release only ran the unit suite. A failing test gets one retry; a test marked <code>@pytest.mark.quarantine</code> runs in a separate step that can't fail the run (see <a href="https://github.com/evi-assistant/evi-ai/blob/main/TESTING.md#ci-gates" target="_blank" rel="noopener">TESTING.md</a>).</li><li>Verifies the git tag matches <strong>both</strong> <code>pyproject.toml</code>'s version and <code>evi/__init__.py</code>'s <code>__version__</code> (fails on any drift).</li><li>Checks the CHANGELOG: <code>python -m tests.test_changelog_lint --tag &lt;tag&gt; --date &lt;tagged commit date&gt;</code> fails unless the file lints clean, its newest entry is the tag's version, and that entry is dated within a day of the tagged commit. Only <code>vX.Y.Z</code> tags pass; pre-release tags (<code>v1.1.0rc1</code>) are refused, since this pipeline publishes final releases only.</li><li>Builds sdist + wheel via <code>python -m build</code>.</li><li>Installs the package + all useful extras, runs ruff, then the full test suite (<code>tests</code> and <code>.github/actions</code>).</li><li>Publishes to PyPI via Trusted Publishing (OIDC — no API token).</li><li>Keyless (OIDC) sigstore-signs the artifacts and creates a GitHub release with auto-generated notes + attached artifacts (wheel/sdist + <code>*.sigstore.json</code>).</li><li>After the PyPI publish, two more jobs: the desktop release (<code>desktop-release.yml</code> with <code>release_tag: desktop-v&lt;version&gt;</code>) and the GHCR image (<code>docker.yml</code>). Neither runs on its own for a <code>v*</code> tag, so a tag cut while e2e fails publishes nothing anywhere.</li></ol>
+<p>The version and CHANGELOG checks need a tag, so a manual <code>workflow_dispatch</code> re-publish (for a run that failed before publishing) skips them, and skips the desktop and Docker jobs too.</p>
+<p><code>tests/test_changelog_lint.py</code> also runs in the unit suite, so a malformed header, a duplicate version, a repeated <code>### Section</code> heading inside a released entry (the trace a lost release header leaves) or a date in the future fails CI before you tag. The same file checks the shape of <code>release.yml</code>: every publishing job sits downstream of e2e, and no gate step can be skipped or have its failure ignored.</p>
 <p>If anything fails before publish, fix it on a new commit and retag with a patched version (<code>v0.8.1</code>). Don't re-push the same tag — GitHub releases get confused and PyPI rejects duplicates.</p>
 <h2>Local verification before tagging</h2>
-<pre><code class="language-bash"># Test
-.venv/Scripts/python -m pytest -q --timeout=30
+<pre><code class="language-bash"># Test (the composite actions' tests live under .github/actions)
+.venv/Scripts/python -m pytest -q --timeout=30 tests .github/actions
 
 # Lint
-.venv/Scripts/python -m ruff check evi tests scripts
+.venv/Scripts/python -m ruff check evi tests scripts .github/actions
+
+# The release's CHANGELOG check, as the tag will run it
+.venv/Scripts/python -m tests.test_changelog_lint --tag v0.8.0 --date "$(git log -1 --format=%cI)"
+
+# The release's e2e gate (needs the e2e extra + `playwright install chromium`)
+.venv/Scripts/python -m pytest tests/e2e -m "e2e and not quarantine" --timeout=120
 
 # Build
 .venv/Scripts/python -m build
@@ -65,15 +74,17 @@ python -m venv /tmp/wheel-check
 # (keep Cargo.toml / package.json in lockstep), then:
 git tag desktop-v1.0.0
 git push origin desktop-v1.0.0</code></pre>
+<p>Every PyPI release also runs this workflow (<code>release.yml</code> calls it with <code>release_tag: desktop-v&lt;version&gt;</code> after the PyPI publish), so a <code>v*</code> tag cuts the matching desktop release too.</p>
 <p>The workflow (Windows / macOS / Linux matrix, <code>fail-fast: false</code>):</p>
-<ol><li>Freezes the practical-tier sidecar in an isolated <code>.venv-build</code> (<code>build-sidecar.{ps1,sh}</code>) and runs <code>evi-server --check</code>.</li><li>Builds the standalone app via <code>tauri-action</code> with <code>--config src-tauri/tauri.standalone.conf.json</code> (ships the onedir sidecar through <code>bundle.resources</code>).</li><li>Creates a <strong>non-draft (published)</strong> GitHub release for the tag and attaches the minisign-signed installers (<code>.msi</code>/<code>-setup.exe</code> on Windows, <code>.dmg</code>/<code>.app</code> on macOS, <code>.deb</code>/<code>.rpm</code>/<code>.AppImage</code> on Linux) plus a generated <code>latest.json</code> for the in-app updater. Also uploads them as workflow artifacts, so a manual <code>workflow_dispatch</code> run (no tag) still produces downloadables.</li></ol>
+<ol><li>On Windows, runs the desktop shell's <code>cargo test</code> first (its Windows-only code, such as the link opener, only compiles there); a failing test keeps the Windows installers out of the release.</li><li>Freezes the practical-tier sidecar in an isolated <code>.venv-build</code> (<code>build-sidecar.{ps1,sh}</code>) and runs <code>evi-server --check</code>.</li><li>Optionally, on Windows, runs the native-desktop smoke tests (<code>tests/desktop_e2e</code>) against the freshly built <code>evi-desktop.exe</code> through tauri-driver and an msedgedriver matched to the WebView2 runtime, before anything is published. Off by default: tick the <code>desktop_e2e</code> input on a manual run, or set the repository variable <code>EVI_DESKTOP_E2E=true</code> to run it on every desktop release. With it on, a missing driver or exe, zero tests or any skipped test fails the Windows job, so its installers aren't published. Try a manual run before setting the variable.</li><li>Builds the standalone app via <code>tauri-action</code> with <code>--config src-tauri/tauri.standalone.conf.json</code> (ships the onedir sidecar through <code>bundle.resources</code>).</li><li>Creates a <strong>non-draft (published)</strong> GitHub release for the tag and attaches the minisign-signed installers (<code>.msi</code>/<code>-setup.exe</code> on Windows, <code>.dmg</code>/<code>.app</code> on macOS, <code>.deb</code>/<code>.rpm</code>/<code>.AppImage</code> on Linux) plus a generated <code>latest.json</code> for the in-app updater. Also uploads them as workflow artifacts, so a manual <code>workflow_dispatch</code> run (no tag) still produces downloadables.</li></ol>
 <p>Caveats:</p>
 <ul><li>Installers carry a <strong>minisign</strong> signature (for the in-app updater), but are <strong>not OS code-signed</strong> — Windows SmartScreen and macOS Gatekeeper still warn on first run. Authenticode/Apple notarization is still TODO (see <em>Roadmap</em> below).</li><li>All three OSes are verified end-to-end as of the <strong>desktop-v1.0.0</strong> matrix (2026-07-01): the Windows / macOS / Linux jobs all built and published signed installers + <code>latest.json</code> to the public release.</li></ul>
 <h3>In-app auto-update (Tauri updater)</h3>
 <p>The desktop app self-updates directly from the <strong>public</strong> <code>evi-assistant/evi-ai</code> GitHub releases. On launch the Rust shell checks <code>releases/latest/download/latest.json</code>, and if a newer <strong>signed</strong> build exists it downloads, installs, and restarts. Opt out with <code>EVI_AUTO_UPDATE=0</code>.</p>
 <ul><li><strong>No separate release channel.</strong> Because the repo is public, <code>desktop-release.yml</code> attaches the signed installers + <code>latest.json</code> straight to the repo's own releases and the updater reads them there — no mirror repo or <code>RELEASES_TOKEN</code> needed. (Historically, while the repo was private, a <code>mirror</code> job copied assets to a separate public releases channel; that's been removed.)</li><li><strong>Signing keys.</strong> The updater only installs bundles signed with our key. The <strong>public</strong> key lives in <code>tauri.conf.json</code> (<code>plugins.updater.pubkey</code>); the <strong>private</strong> key + its password are repo secrets <code>TAURI_SIGNING_PRIVATE_KEY</code> and <code>TAURI_SIGNING_PRIVATE_KEY_PASSWORD</code>, consumed by <code>desktop-release.yml</code>. A local backup is in <code>~/.evi/evi-updater.key</code> (+ <code>.pub</code>) and <code>~/.evi/evi-updater.pass</code> — <strong>keep these safe; losing them means no client can verify future updates</strong> (you'd have to ship a new pubkey + re-onboard).</li><li><strong>Cutting an updatable release.</strong> Bump <code>desktop/src-tauri/tauri.conf.json</code> <code>version</code> (and <code>Cargo.toml</code> / <code>package.json</code> to match), then push a <code>desktop-v&lt;version&gt;</code> tag. <code>createUpdaterArtifacts: true</code> makes the build emit the <code>.sig</code> files; <code>tauri-action</code> (with the signing env) attaches them plus a generated <code>latest.json</code> to the release. The updater compares the running app's version to <code>latest.json</code>, so the <strong>version must increase</strong> for clients to update.</li><li><strong>Rotating the key.</strong> <code>npx tauri signer generate -w ~/.evi/evi-updater.key -f</code>, update the pubkey in <code>tauri.conf.json</code>, and reset the two repo secrets (<code>gh secret set …</code>). Clients on the old pubkey won't auto-update across the rotation — they'll need a manual reinstall once.</li><li><strong>OS code-signing is separate</strong> (and still TODO): the updater's minisign signature is not Authenticode/Apple notarization, so SmartScreen/Gatekeeper still warn until those are added.</li></ul>
 <h2>Docker</h2>
-<p>The CI workflow doesn't push images by default. To do it manually after a release:</p>
+<p><code>release.yml</code> publishes the GHCR image (<code>ghcr.io/&lt;owner&gt;/&lt;repo&gt;</code>, tagged with the version, <code>major.minor</code> and <code>latest</code>, for amd64 and arm64) through <code>docker.yml</code> after the PyPI publish, so it waits for the same e2e and CHANGELOG gates. <code>docker.yml</code> has no tag trigger of its own; a manual <code>workflow_dispatch</code> of it builds, and pushes only if you tick <code>push</code>.</p>
+<p>To build an image by hand instead:</p>
 <pre><code class="language-bash">docker build -t evi:0.8.0 .
 docker tag evi:0.8.0 evi:latest
 # Push to GHCR or Docker Hub from here.</code></pre>
@@ -84,7 +95,7 @@ docker tag evi:0.8.0 evi:latest
 <h2>What about breaking changes?</h2>
 <p>Until 1.0, breaking changes are allowed in minor versions. Call them out clearly in the CHANGELOG under a <code>### Breaking</code> heading.</p>
 <h2>Roadmap</h2>
-<ul><li>Optional Docker push step in <code>release.yml</code> (commented out for now).</li><li>macOS/Windows code-signing for the Tauri desktop bundle — the build pipeline now exists (<code>desktop-release.yml</code>); signing the artifacts (so SmartScreen/Gatekeeper don't warn) is the remaining gap. Needs an Authenticode cert (Windows) and an Apple Developer ID (macOS), wired into <code>tauri-action</code> via its signing inputs / env.</li></ul>
+<ul><li>macOS/Windows code-signing for the Tauri desktop bundle — the build pipeline now exists (<code>desktop-release.yml</code>); signing the artifacts (so SmartScreen/Gatekeeper don't warn) is the remaining gap. Needs an Authenticode cert (Windows) and an Apple Developer ID (macOS), wired into <code>tauri-action</code> via its signing inputs / env.</li></ul>
     </article>
     <a class="doc-source" href="https://github.com/evi-assistant/evi-ai/blob/main/docs/releasing.md">Edit on GitHub ↗</a>
   </main>

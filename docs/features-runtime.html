@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Managed local runtime (llama.cpp) — eVi docs</title>
+  <meta name="description" content="eVi can run a local model for you with nothing else installed: no Ollama, no LM Studio, no account and no administrator rights. It downloads a prebuilt llama-server from a pinned l… — eVi documentation." />
+  <link rel="stylesheet" href="../styles.css" />
+  <link rel="stylesheet" href="docs.css" />
+  <link rel="icon" href="../favicon.svg" type="image/svg+xml" />
+</head>
+<body>
+  <header class="nav">
+    <a class="brand" href="../index.html" aria-label="eVi home">
+      <span class="brand-mark">e<span class="brand-accent">Vi</span></span>
+    </a>
+    <nav class="nav-links">
+      <a href="index.html">Docs</a>
+      <a href="../index.html#install">Install</a>
+      <a href="../index.html#download">Download</a>
+      <a class="nav-gh" href="https://github.com/evi-assistant/evi-ai">GitHub ↗</a>
+    </nav>
+  </header>
+  <main class="doc-main">
+    <article class="doc">
+<h1>Managed local runtime (llama.cpp)</h1>
+<h2>Overview</h2>
+<p>eVi can run a local model for you with nothing else installed: no Ollama, no LM Studio, no account and no administrator rights. It downloads a prebuilt <code>llama-server</code> from a pinned llama.cpp release and a small GGUF model from a curated catalog, starts the server on <code>127.0.0.1</code>, points <code>[llm]</code> at it and keeps it running while eVi runs. This is the <strong>managed runtime</strong>.</p>
+<ul><li><strong>Zero-config first run</strong> — the web and desktop first-run screen offers it as <em>Download a model</em>; <code>evi runtime setup</code> does the same from a terminal.</li><li><strong>A model catalog</strong> — download, switch and remove local models from Settings → Model &amp; Backend → Local models, or with <code>evi model</code>.</li><li><strong>GPU acceleration</strong> — one click (or <code>evi runtime gpu</code>) fetches the CUDA build that matches your NVIDIA GPU and offloads the model to it.</li><li><strong>Bring your own llama.cpp</strong> — point eVi at a <code>llama-server</code> you already have and it supervises that one instead of downloading.</li><li><strong>A context window sized to the machine</strong> — eVi starts the server with the largest window that fits and keeps <code>[llm] context_size</code> in step.</li></ul>
+<p>Ollama, LM Studio and every other backend still work; the managed runtime is just the one that needs nothing from you.</p>
+<h2>How it works</h2>
+<h3>What setup puts on your machine</h3>
+<p>Before anything downloads, the setup card lists each item with its size and destination, says the server is loopback-only and needs no administrator access, and <strong>Show the exact files &amp; commands</strong> reveals the literal download URLs. Items already on disk are marked as such and are not downloaded again. The same list is <code>GET /api/runtime/plan</code> (pass <code>?model_id=&lt;id&gt;</code> for a model other than the starter).</p>
+<table><thead><tr><th>Item</th><th>Where</th></tr></thead><tbody><tr><td>llama.cpp runtime (CPU build)</td><td><code>~/.evi/runtime/llama/&lt;release&gt;/</code></td></tr><tr><td>GPU runtime (CUDA build, on request)</td><td>under the same release folder</td></tr><tr><td>Models (GGUF)</td><td><code>~/.evi/models/&lt;owner&gt;__&lt;repo&gt;/&lt;file&gt;.gguf</code> (the Hugging Face repo, <code>/</code> written as <code>__</code>)</td></tr><tr><td>Server log</td><td><code>~/.evi/runtime/logs/llama-server.log</code></td></tr><tr><td>Context-size record</td><td><code>~/.evi/runtime/llm_context.json</code></td></tr></tbody></table>
+<p>Every download is checked against a SHA-256 pinned in eVi before it is extracted or run, models come from a pinned Hugging Face commit, archives can't write outside their folder, and a failed install leaves nothing half-installed. A catalog model already on disk counts as installed only if it matches its pin. Developers re-pin with <code>scripts/pin_runtime_hashes.py</code> (see <a href="development.html#bumping-llamacpp-or-the-model-catalog" target="_blank" rel="noopener">development.md</a>).</p>
+<h3>Setup steps</h3>
+<p>Setup runs in the background and reports named steps: <strong>Prepare runtime · Download model · Start the model · Ready</strong>. Every failure offers <strong>Run diagnostics</strong> and <strong>View log</strong>; the log is served over the API (<code>GET /api/runtime/log?lines=200</code>), so it is readable from a browser too. Progress is <code>GET /api/runtime/status</code> (<code>stage</code>, <code>pct</code>, <code>message</code>, <code>error</code>, plus <code>server_running</code>, <code>active_model_id</code>, the GPU fields and <code>ctx</code>).</p>
+<h3>The server</h3>
+<p>The managed <code>llama-server</code> listens on <code>127.0.0.1</code> only, on the first free port from 8080. eVi starts it with the model (<code>-m</code>), the context window (<code>-c</code>) and the GPU offload (<code>-ngl</code>), waits until it answers, and writes <code>backend = "llamacpp"</code>, its <code>base_url</code> and the model name into <code>config.toml</code>. Switching models restarts the server on the same port with the new model.</p>
+<p>The server lives inside an eVi process:</p>
+<ul><li><code>evi web</code> and the desktop app relaunch it on start when <code>[llm]</code> points at the managed runtime and nothing is answering, on the configured model (or the first installed one).</li><li>It stops when that eVi process exits. On Windows it is also tied to eVi's process lifetime, so a hard kill of the app takes the server with it. On macOS and Linux a server left behind by a hard kill is reused on the next start.</li><li>The terminal REPL (<code>evi chat</code>, <code>evi run</code>) talks to the server while the web or desktop app is running; it does not start one itself.</li></ul>
+<h3>Context window</h3>
+<p>eVi owns <code>[llm] context_size</code> while you use the managed runtime: it picks 32768, 16384 or 8192 tokens, whatever fits next to the model in VRAM (on the GPU) or in about 70% of RAM, and gives your own value back when you switch to another backend. Details: <a href="configuration.html#context_size-and-the-managed-llamacpp-runtime" target="_blank" rel="noopener">configuration.md</a>.</p>
+<h3>GPU</h3>
+<p>When a supported GPU is found, Settings → Model &amp; Backend → Local models shows **Use your GPU (<em>name</em>)**. It downloads the matching CUDA build once and restarts the current model with full offload when the model fits in VRAM.</p>
+<table><thead><tr><th>Platform</th><th>What you get</th></tr></thead><tbody><tr><td>Windows + NVIDIA</td><td>CUDA build chosen by compute capability: the CUDA 13.3 build for Blackwell (RTX 50-series), the 12.4 build for older GPUs</td></tr><tr><td>macOS</td><td>Metal, in the base build: nothing extra to download</td></tr><tr><td>Linux</td><td>CPU (this llama.cpp release ships no prebuilt CUDA build)</td></tr></tbody></table>
+<p><code>GET /api/runtime/status</code> reports <code>gpu_available</code>, <code>gpu_installed</code>, <code>on_gpu</code> and <code>gpu_name</code>. Later starts prefer the GPU build when the model fits.</p>
+<h3>Your own llama.cpp</h3>
+<p>If you already have a <code>llama-server</code> (your own build, a GPU build eVi doesn't ship), the setup card offers it: <code>GET /api/runtime/detect</code> lists binaries on <code>PATH</code> and in common install folders, and <code>POST /api/runtime/locate</code> with <code>{"path": "...", "model_id": "..."}</code> validates one, saves it as <code>[runtime] server_path</code> and starts it on a model. eVi then supervises your binary and skips the runtime download. A path that later disappears or stops being a runnable <code>llama-server</code> is cleared, and eVi falls back to the managed download.</p>
+<pre><code class="language-toml">[runtime]
+server_path = "C:/llama.cpp/llama-server.exe"   # empty = eVi's own download</code></pre>
+<h2>Usage</h2>
+<h3>CLI</h3>
+<pre><code class="language-text">evi runtime setup      # download the CPU runtime + the starter model, start it, point eVi at it
+evi runtime status     # runtime installed? server running? the current setup stage
+evi runtime gpu        # download the CUDA build if needed and rerun the current model on the GPU
+evi runtime stop       # stop the server this process started
+evi model list         # the catalog: ● downloaded · ★ best fit for this machine · ▶ active
+evi model use &lt;id&gt;     # download if needed, then switch the server to that model
+evi model remove &lt;id&gt;  # delete a downloaded model (not the active one)</code></pre>
+<p><code>evi runtime …</code> and <code>evi model use</code> run the server inside their own process, so it stops when the command exits; the downloads and the config stay, and <code>evi web</code> or the desktop app starts the server again. Use them while the app is closed, or use Settings → Model &amp; Backend in the app while it is open. <code>evi models</code> (plural) is the older command group for Ollama, LM Studio and <code>hf:</code> pulls; <code>evi model</code> (singular) is the managed catalog.</p>
+<h3>Web and desktop</h3>
+<ul><li><strong>First run:</strong> <em>Download a model</em> (or <em>Start local AI</em> once it is downloaded) on the first-run screen; see <a href="features-onboarding.html" target="_blank" rel="noopener">onboarding.md</a>.</li><li><strong>Settings → Model &amp; Backend → Local models:</strong> the catalog with size and license per model, <strong>Use</strong> (downloads with progress, then switches), <strong>Remove</strong>, and <strong>Use your GPU</strong>.</li></ul>
+<h3>API</h3>
+<table><thead><tr><th>Route</th><th>What it does</th></tr></thead><tbody><tr><td><code>GET /api/runtime/plan</code></td><td>What setup would download and where, before it does</td></tr><tr><td><code>POST /api/runtime/setup</code></td><td>Start first-run setup in the background</td></tr><tr><td><code>GET /api/runtime/status</code></td><td>Progress, server state, active model, GPU fields, <code>ctx</code></td></tr><tr><td><code>GET /api/runtime/log</code></td><td>Tail of the server log (<code>?lines=</code>, at most 2000)</td></tr><tr><td><code>POST /api/runtime/stop</code></td><td>Stop the managed server</td></tr><tr><td><code>GET /api/runtime/catalog</code></td><td>Catalog entries with <code>installed</code>, the recommendation, the active model</td></tr><tr><td><code>POST /api/runtime/model/use</code></td><td><code>{"id": ...}</code>: download if needed and switch</td></tr><tr><td><code>POST /api/runtime/model/remove</code></td><td><code>{"id": ...}</code>: delete a downloaded model (409 for the active one)</td></tr><tr><td><code>POST /api/runtime/gpu</code></td><td>Download the CUDA build if needed and rerun on the GPU</td></tr><tr><td><code>GET /api/runtime/detect</code></td><td><code>llama-server</code> binaries already on this machine</td></tr><tr><td><code>POST /api/runtime/locate</code></td><td>Use an existing binary (400 if it isn't a runnable <code>llama-server</code>)</td></tr></tbody></table>
+<p>The long-running calls return at once; poll <code>GET /api/runtime/status</code>.</p>
+<h2>The catalog</h2>
+<p>A short list of small instruction models (Qwen2.5 0.5B to 14B, Llama 3.2 1B and 3B, Qwen2.5 Coder 7B), all Q4_K_M GGUFs that download without a Hugging Face account. <code>evi model list</code> (or the Local models list) shows the current entries with size and license. Licenses differ: some are Apache-2.0, the Llama models use the Llama 3.2 Community license, and Qwen2.5 3B has a non-commercial research license. Check the license before you build on a model.</p>
+<p>★ marks the largest general model that fits your machine: in VRAM when there is a GPU, else in about 70% of RAM. First-run setup uses the 1.5B starter (about 1 GB) so the first reply comes quickly; switch up once it works.</p>
+<h2>Notes / limits</h2>
+<ul><li><strong>Downloads happen after install.</strong> The installer stays small; the runtime and a model are fetched the first time you ask for them.</li><li><strong>One managed server per eVi process.</strong> A model switch is a restart, so the first reply after a switch waits for the model to load.</li><li><strong>Removing the active model is refused.</strong> Switch to another one first (on Windows the running server holds the file open).</li><li><strong>Linux has no GPU build here.</strong> Point <code>[runtime] server_path</code> at your own CUDA or Vulkan <code>llama-server</code> to use the GPU.</li><li><strong>The server is loopback-only.</strong> It is not reachable from your network. To reach eVi from another machine, see <a href="multi-machine.html" target="_blank" rel="noopener">multi-machine.md</a>.</li></ul>
+<h2>Relevant source files</h2>
+<ul><li><code>evi/runtime/setup.py</code>: setup, model switch, GPU switch, autostart, context window</li><li><code>evi/runtime/llamacpp_runtime.py</code>: runtime download, pins, CUDA build choice, detection</li><li><code>evi/runtime/catalog.py</code>: the model catalog, downloads, recommendation, window sizing</li><li><code>evi/runtime/llama_server.py</code>, <code>evi/runtime/reap.py</code>: the server process and its lifetime</li><li><code>evi/data/runtime_models.json</code>: catalog data</li></ul>
+    </article>
+    <a class="doc-source" href="https://github.com/evi-assistant/evi-ai/blob/main/docs/features/runtime.md">Edit on GitHub ↗</a>
+  </main>
+  <footer class="doc-foot">
+    <a href="index.html">← All documentation</a>
+    <span>eVi — local-first personal AI assistant</span>
+  </footer>
+</body>
+</html>

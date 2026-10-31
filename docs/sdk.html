@@ -43,6 +43,8 @@ print(run_headless(agent, "What is eVi?").text)</code></pre>
     *,
     config=None,                 # a Config; defaults to Config.load()
     system_prompt=None,          # override the base system prompt
+    model=None,                  # a different model id on the same backend
+    backend=None,                # a registered backend (entry or name) for this agent
     client=None,                 # a pre-built OpenAI-compatible client
     tools=None,                  # explicit tools (Tool objects OR @tool fns)
     tool_categories=None,        # select built-ins by category, e.g. ["fs","code"]
@@ -51,14 +53,24 @@ print(run_headless(agent, "What is eVi?").text)</code></pre>
     enable_project=True,         # load EVI.md / project context
     enable_hooks=True,           # load ~/.evi/hooks.toml
     enable_guardrails=True,      # load ~/.evi/guardrails.toml (if enabled)
-    permission_callback=None,    # tool-permission prompt; None = non-interactive
-    permission_batch_callback=None,
+    memory_root=None,            # MemoryStore folder; None = ~/.evi/memory (or user_root/memory)
+    user_root=None,              # a multi-user login's data folder (~/.evi/users/&lt;name&gt;)
+    permission_callback=None,    # (tool_name, args_json, category) -&gt; bool; None = nobody to ask
+    permission_batch_callback=None,  # [(tool_name, args_json, category), …] -&gt; [bool, …]
     transcripts=None,            # a TranscriptStore to log turns to
     session_id=None,
+    frontend="cli",              # "cli" | "web": the surface the agent serves
+    unattended_policy=None,      # "deny" | "allow" with no callback; None = [auto] unattended_policy
 ) -&gt; Agent</code></pre>
 <p>Tool selection precedence:</p>
 <ol><li><code>tools=[...]</code> — use exactly these (a <code>Tool</code>, or a <code>@tool</code>-decorated function, which the SDK resolves from the registry). Pass <code>tools=[]</code> for a no-tool agent.</li><li><code>tool_categories=[...]</code> — select built-ins by category, ignoring config toggles.</li><li>neither — select built-ins per the <code>[tools]</code> toggles in your config.</li></ol>
+<p>Per-user data:</p>
+<ul><li><code>memory_root</code> is the folder for the agent's <code>MemoryStore</code> (its system prompt's memory index) when memory is on. <code>None</code> means the shared <code>~/.evi/memory</code>, unless <code>user_root</code> is set.</li><li><code>user_root</code> is a multi-user web login's data folder, which the web server passes for each login's chats. The memory tools then keep that user's notes in <code>user_root/memory</code>, and <code>memory_root</code> defaults to that folder too. Tools see it as <code>ctx.user_root</code> (see <a href="https://github.com/evi-assistant/evi-ai/blob/main/docs#custom-tools" target="_blank" rel="noopener">Custom tools</a>).</li><li><code>user_root=None</code> means: the user of the tool call that is building this agent, if there is one, so a subagent works for its parent's user. Otherwise single-user. An agent built on a thread you start yourself without <code>contextvars.copy_context()</code> sees no tool call, so pass <code>user_root</code> explicitly there.</li></ul>
 <blockquote><p>The CLI's own agent builder delegates to <code>build_agent</code> — it adds only its runtime concerns (spawning MCP servers, interactive permission prompts). There is one source of truth for how an Agent is assembled.</p></blockquote>
+<h3>Permissions: an agent with no callback fails closed</h3>
+<p>An agent built without <code>permission_callback</code> or <code>permission_batch_callback</code> has nobody to ask, so it is <strong>unattended</strong>. Calls that are pre-approved still run: the <code>[auto] auto_approve</code> categories (by default <code>fs</code>, <code>code</code>, <code>memory</code>, <code>skills</code> and <code>image</code>), your <code>allow</code> rules and trusted dirs and domains. Any other call that would ask is <strong>not run</strong>, and the model gets <code>PERMISSION DENIED: &lt;tool&gt;(&lt;args&gt;) was not run. This run is unattended (nobody can approve a tool call), …</code>. Your own <code>@tool</code>s are in categories nobody auto-approved, so they are denied too until you choose one of these:</p>
+<ul><li><strong>Decide each call yourself</strong>: pass <code>permission_callback=</code> (a function of <code>tool_name, args_json, category</code> that returns <code>True</code> to run the call), or <code>permission_batch_callback=</code> for one answer list per batch of calls.</li><li><strong>Run what would ask</strong>: pass <code>unattended_policy="allow"</code>. Use it for an agent whose tool list you control (as in <a href="https://github.com/evi-assistant/evi-ai/blob/main/docs#custom-tools" target="_blank" rel="noopener">Custom tools</a>); it lets every tool the agent has run without asking.</li><li><strong>Pre-approve a category</strong> in <code>~/.evi/config.toml</code>, e.g. add <code>"math"</code> to <code>[auto] auto_approve</code>. This applies to every eVi session, not just your program.</li></ul>
+<p><code>unattended_policy=None</code> (the default) follows <code>[auto] unattended_policy</code>, which is <code>"deny"</code> unless the user set <code>"allow"</code>. Whatever the policy, an unattended agent never writes a protected path, never reads a protected secret (<code>.env</code>, a key) that no explicit <code>allow</code> rule covers, and never runs a command the destructive-command guard flags. <code>run_headless</code> reports how the run settled such calls in <code>HeadlessResult.policy</code>: <code>"deny"</code>, <code>"allow"</code>, <code>"allow-all"</code> (after <code>agent.enable_auto_all()</code>) or <code>"interactive"</code> (a callback decides), naming an <code>[auto] mode</code> that lets calls through (<code>"allow-all (mode=yolo)"</code>). See <a href="features-permissions-and-sandbox.html#unattended-runs" target="_blank" rel="noopener">Unattended runs</a>.</p>
 <h2>Streaming events</h2>
 <p><code>Agent.chat(prompt)</code> is a generator of typed events. Match on the ones you care about; ignore the rest.</p>
 <pre><code class="language-python">from evi.sdk import build_agent, TextDelta, ToolCall, ToolResult, RouteInfo, Done, Error
@@ -72,7 +84,7 @@ for ev in build_agent().chat("List the Python files here"):
     elif isinstance(ev, Done):      break</code></pre>
 <p>Event types (all exported from <code>evi.sdk</code>):</p>
 <table><thead><tr><th>Event</th><th>Fields</th><th>Meaning</th></tr></thead><tbody><tr><td><code>TextDelta</code></td><td><code>text</code></td><td>A chunk of assistant text.</td></tr><tr><td><code>ThinkingDelta</code></td><td><code>text</code></td><td>Reasoning chunk (models that emit <code>&lt;think&gt;</code>).</td></tr><tr><td><code>ToolCall</code></td><td><code>name</code>, <code>arguments</code></td><td>The model asked to call a tool.</td></tr><tr><td><code>ToolResult</code></td><td><code>name</code>, <code>output</code>, <code>citations</code></td><td>A tool finished.</td></tr><tr><td><code>ToolProgress</code></td><td><code>names</code>, <code>elapsed</code></td><td>A slow (<code>long=True</code>) tool is still running.</td></tr><tr><td><code>UsageStats</code></td><td><code>prompt_tokens</code>, <code>completion_tokens</code>, <code>total_tokens</code></td><td>Real token counts.</td></tr><tr><td><code>LogProbs</code></td><td><code>tokens</code>, <code>avg_logprob</code>, …</td><td>Per-token confidence (if enabled).</td></tr><tr><td><code>Guardrail</code></td><td><code>direction</code>, <code>blocked</code>, <code>message</code>, …</td><td>A guardrail fired.</td></tr><tr><td><code>RouteInfo</code></td><td><code>route</code>, <code>model</code></td><td>The per-turn routing decision.</td></tr><tr><td><code>Done</code></td><td><code>reason</code></td><td>Turn complete.</td></tr><tr><td><code>Error</code></td><td><code>message</code></td><td>Turn failed.</td></tr></tbody></table>
-<p>For a non-streaming convenience, use <code>run_headless(agent, prompt)</code> → a <code>HeadlessResult(text, tools, usage, error)</code>.</p>
+<p>For a non-streaming convenience, use <code>run_headless(agent, prompt)</code> → a <code>HeadlessResult</code>, the v1 run report (<code>text</code>, <code>tool_calls</code>, <code>stop_reason</code>, <code>usage</code>, <code>error</code>, <code>policy</code>, <code>files_changed</code>, …; see <a href="features-structured-and-batch.html" target="_blank" rel="noopener">Structured output &amp; batch</a>).</p>
 <h2>Custom tools</h2>
 <pre><code class="language-python">from evi.sdk import tool, build_agent, run_headless
 
@@ -80,21 +92,65 @@ for ev in build_agent().chat("List the Python files here"):
 def add(a: int, b: int) -&gt; int:
     return a + b
 
-agent = build_agent(tools=[add])
+# Nobody is asked about tool calls here, and "math" isn't an auto-approved
+# category, so say that this agent's calls may run. Its only tool is `add`.
+agent = build_agent(tools=[add], unattended_policy="allow")
 print(run_headless(agent, "What is 19 + 23?").text)</code></pre>
+<p>Without <code>unattended_policy="allow"</code> (or a <code>permission_callback</code>, see <a href="https://github.com/evi-assistant/evi-ai/blob/main/docs#permissions-an-agent-with-no-callback-fails-closed" target="_blank" rel="noopener">Permissions</a>) the call is denied and the model answers without the tool.</p>
 <p><code>@tool</code> reads the function's type hints to build the JSON schema and the first docstring line as the description (override with <code>description=</code>). A tool may return a <code>str</code>, a JSON-able object, or a <code>ToolOutput(text, citations)</code> to attach source citations. Use <code>register_builtin_tools()</code> if you need to populate the full built-in <code>REGISTRY</code> yourself.</p>
+<p><code>@tool(trust="untrusted")</code> marks a tool whose output is text an outsider wrote (a web page, another server); the default is <code>"trusted"</code>, and any other value raises <code>ValueError</code>. It is a label for now: nothing treats the two differently yet.</p>
+<h3>The calling session: <code>ctx</code></h3>
+<p>A tool that needs to know which session called it declares a <code>ctx</code> parameter. The agent passes it the call's <code>ToolContext</code>. <code>ctx</code> never appears in the schema, so the model can't see it, and a <code>ctx</code> argument the model sends is replaced by the real context:</p>
+<pre><code class="language-python">from evi.sdk import tool, ToolContext
+
+@tool(category="custom", description="Where this session works")
+def where(ctx: ToolContext | None = None) -&gt; str:
+    return ctx.cwd if ctx and ctx.cwd else "."</code></pre>
+<p>Give <code>ctx</code> the default <code>None</code>: a call made outside an agent (<code>Tool.call</code> with no context, <code>evi mcp serve</code>) passes <code>None</code>. The fields:</p>
+<table><thead><tr><th>Field</th><th>Holds</th></tr></thead><tbody><tr><td><code>agent</code></td><td>The <code>Agent</code> running the call (<code>None</code> outside one).</td></tr><tr><td><code>session_id</code></td><td>That agent's session id.</td></tr><tr><td><code>cwd</code></td><td>The session's working folder as <code>Agent.cwd</code> holds it; <code>""</code> means the process's current folder.</td></tr><tr><td><code>turn_index</code></td><td>The agent's user-turn count, 1 for its first message. A revived or resumed session counts on from its history.</td></tr><tr><td><code>user_root</code></td><td>A multi-user web login's data folder (<code>~/.evi/users/&lt;name&gt;</code>); <code>None</code> in single-user mode.</td></tr><tr><td><code>cancel_token</code></td><td>A <code>threading.Event</code> a long tool can poll. Nothing sets it yet.</td></tr><tr><td><code>parent</code></td><td>The context of the tool call whose tool built this agent (a subagent); <code>None</code> at the top level.</td></tr><tr><td><code>root</code></td><td>(property) The top-level session's context, at the end of the <code>parent</code> chain.</td></tr></tbody></table>
+<p>The name <code>ctx</code> is reserved. A tool that took a model argument called <code>ctx</code> now gets the <code>ToolContext</code> in its place, so rename that argument. Only a parameter named <code>ctx</code> counts (not <code>**kwargs</code>), and MCP tools are exempt: their arguments all go to the server.</p>
+<h3>Per-session state: <code>binder</code></h3>
+<p>A tool whose state must belong to one session, not to the process, gets a <code>binder</code>: a function that takes the <code>ToolContext</code> and returns the function that session runs. Build the <code>Tool</code> directly (<code>@tool</code> takes no binder):</p>
+<pre><code class="language-python">import json
+from evi.sdk import Tool, ToolContext, build_agent
+
+def note_binder(ctx: ToolContext):
+    notes: list[str] = []          # this session's own list
+
+    def note(text: str) -&gt; str:
+        notes.append(text)
+        return json.dumps(notes)
+
+    return note
+
+note_tool = Tool(
+    name="note",
+    description="Keep a note for this session",
+    parameters={"type": "object",
+                "properties": {"text": {"type": "string"}},
+                "required": ["text"]},
+    func=lambda text: "unbound",   # unused: calls run the binder's function
+    category="custom",
+    binder=note_binder,
+)
+agent = build_agent(tools=[note_tool], unattended_policy="allow")</code></pre>
+<ul><li>An agent binds the tool at its first call. <code>Tool.bind(ctx)</code> returns a copy that runs the binder's function, keeps the name, description and schema, and points back at the original (<code>bound_from</code>). The tool list the model sees doesn't change.</li><li>The agent reuses that binding until its <code>session_id</code> changes or <code>reset()</code> starts a new conversation. The next call then binds again.</li><li>The binder sees the context as it was at that first call, so <code>turn_index</code> and <code>cwd</code> don't move afterwards: read live values from <code>ctx.agent</code>.</li><li>A binder may run more than once for one session (two first calls racing; one result is kept), so it should only build the function, with no other side effects.</li><li>If the binder raises, that call returns <code>ERROR: &lt;type&gt;: &lt;message&gt;</code>. The agent and its other tools are unaffected.</li><li>Two agents given the same tool, or one agent's bound copy, never share state. Called outside an agent, the tool is bound for that one call.</li></ul>
 <h2>Subagents</h2>
 <pre><code class="language-python">from evi.sdk import run_subagents_parallel
 
 results = run_subagents_parallel(
     ["Summarise JWTs", "Summarise UUIDs"],
     system_prompt="You are terse.",
-    tool_categories=(),       # grant tool categories per subagent
+    tool_categories=(),       # tool categories (or names) per subagent; () = no tools
     max_workers=4,
 )
 for task, answer in results:   # input order preserved
     print(task, "-&gt;", answer)</code></pre>
 <p><code>run_subagent(...)</code> is the single-task form. Subagent <em>profiles</em> (named role + tool presets, extendable by plugins) are available via <code>SUBAGENT_PROFILES</code>, <code>all_profiles()</code>, and <code>get_profile(name)</code>.</p>
+<p>What a subagent may use:</p>
+<ul><li><code>tool_categories=</code> takes categories or tool names, and the subagent gets only the matching tools your <code>[tools]</code> toggles enable (safe mode applied). A category with no toggle, such as your own <code>@tool(category="math")</code>, counts as enabled.</li><li><code>tools=</code> is an exact list of registered tool names instead, whatever the toggles say; only safe mode still drops memory, skills and MCP tools.</li><li><code>memory=</code> (single-task form) is the <code>MemoryStore</code> its memory tools use. Without it they use the login's <code>user_root/memory</code> in multi-user mode, else <code>~/.evi/memory</code>.</li></ul>
+<p>How it is asked:</p>
+<ul><li>Called from inside a tool of an agent that has a permission callback, a subagent asks through that callback, one prompt at a time however many run at once, and inherits the agent's <code>enable_auto_all()</code>.</li><li>Called from your own code, it has nobody to ask: a call that would ask follows <code>unattended_policy=</code> (<code>"deny"</code> | <code>"allow"</code>; <code>None</code> takes the spawning agent's, else <code>[auto] unattended_policy</code>). Pass <code>"allow"</code> only with a read-only <code>tools=</code> list. A delegate CLI-agent backend (<code>codex</code>, <code>gemini</code>, <code>amp</code>, <code>qwen</code>, <code>copilot</code>) is then refused, and the result is <code>ERROR: subagent failed: …</code>, unless <code>[llm] allow_cli_agent_unattended = true</code>.</li></ul>
 <h2>Structured output (JSON Schema)</h2>
 <pre><code class="language-python">import json
 from evi.sdk import as_response_format, build_agent, run_headless
@@ -112,9 +168,9 @@ print(json.loads(out.text))    # validates against schema</code></pre>
 <pre><code class="language-python">from evi.sdk import build_agent, run_headless, to_json
 
 res = run_headless(build_agent(tool_categories=["fs"]), "Does a README exist?")
-print(to_json(res))            # {"text":..., "tools":[...], "usage":{...}, "error":...}
+print(to_json(res))            # the v1 run report: {"schema_version": 1, "text": ..., "tool_calls": [...], "stop_reason": "done", ...}
 raise SystemExit(1 if res.error else 0)</code></pre>
-<p>See <a href="https://github.com/evi-assistant/evi-ai/blob/main/examples/python/headless_ci.py" target="_blank" rel="noopener"><code>headless_ci.py</code></a>.</p>
+<p>Nothing prompts in CI: <code>fs</code> is auto-approved by default, so its calls run, and a call outside <code>[auto] auto_approve</code> is denied (<code>"policy": "deny"</code>). See <a href="https://github.com/evi-assistant/evi-ai/blob/main/examples/python/headless_ci.py" target="_blank" rel="noopener"><code>headless_ci.py</code></a>.</p>
 <h2>Sessions &amp; checkpoints</h2>
 <pre><code class="language-python">from evi.sdk import list_sessions, history_from_transcript, export_markdown
 from evi.sdk import list_checkpoints, rewind
@@ -130,9 +186,10 @@ for path, restored in rewind():
 <h2>Orchestration: ultracode &amp; workflows</h2>
 <pre><code class="language-python">from evi.sdk import run_ultracode, make_runner, UltraConfig, build_agent
 
-run_one = make_runner(lambda sp: build_agent(system_prompt=sp, tool_categories=["code"]))
+run_one = make_runner(lambda sp, model: build_agent(system_prompt=sp, model=model))
 result = run_ultracode("design a retry policy", run_one=run_one, cfg=UltraConfig(breadth=3))
 print(result.answer)</code></pre>
+<p><code>make_runner</code> calls the factory with the stage's system prompt and model id (<code>None</code> for the default). Every stage runs unattended under <code>[auto] unattended_policy</code>, and the solvers get only the read-only file tools of <code>UltraConfig.mode</code> (<code>read_file</code>, <code>list_dir</code>, <code>find_files</code>, <code>search_files</code>), so the pipeline returns text and never edits files.</p>
 <p><code>fan_out(fn, items, max_workers=8)</code> is the shared concurrency primitive (results in input order); <code>run_workflow(...)</code> runs a declarative multi-step workflow. See <a href="features-ultracode.html" target="_blank" rel="noopener">features/ultracode.md</a> and <a href="features-agents.html" target="_blank" rel="noopener">features/agents.md</a>.</p>
 <h2>Telemetry</h2>
 <pre><code class="language-python">from evi.sdk import otel

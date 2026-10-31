@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Steering a running turn — eVi docs</title>
+  <meta name="description" content="You can type while eVi is still working. In the web and desktop app a message sent during a turn is queued and applied at the turn&#x27;s next step, after the tool eVi is running finish… — eVi documentation." />
+  <link rel="stylesheet" href="../styles.css" />
+  <link rel="stylesheet" href="docs.css" />
+  <link rel="icon" href="../favicon.svg" type="image/svg+xml" />
+</head>
+<body>
+  <header class="nav">
+    <a class="brand" href="../index.html" aria-label="eVi home">
+      <span class="brand-mark">e<span class="brand-accent">Vi</span></span>
+    </a>
+    <nav class="nav-links">
+      <a href="index.html">Docs</a>
+      <a href="../index.html#install">Install</a>
+      <a href="../index.html#download">Download</a>
+      <a class="nav-gh" href="https://github.com/evi-assistant/evi-ai">GitHub ↗</a>
+    </nav>
+  </header>
+  <main class="doc-main">
+    <article class="doc">
+<h1>Steering a running turn</h1>
+<h2>Overview</h2>
+<p>You can type while eVi is still working. In the web and desktop app a message sent during a turn is <strong>queued and applied at the turn's next step</strong>, after the tool eVi is running finishes, instead of interrupting the work or being lost behind a disabled Send button. "Correct it while it works" replaces "wait, or stop and start over".</p>
+<ul><li>While a turn runs, the <strong>Send</strong> button reads <strong>Queue</strong>.</li><li>Your message appears in the conversation at once, tagged <em>queued — applies at the next step</em>, and the tag changes to <em>applied</em> when it lands.</li><li><strong>Nothing is lost.</strong> If the turn finishes before there is a next step (the model just answered, or the turn ended on an error or its step limit), the queued message is sent as a normal message instead.</li></ul>
+<h2>How it works</h2>
+<p>A turn is a loop: the model replies, eVi runs the tools it asked for, and the model sees the results in the next round. A steering message waits in a queue on the session's agent. At the top of each round, before the model is called again, eVi appends everything queued to the conversation as your messages, writes them to the transcript and emits a <code>Steering</code> event (<code>applied: true</code>) on the turn's event stream; the model reads them together with the tool results.</p>
+<p>When the turn ends, anything still queued is handed back as <code>Steering</code> events with <code>applied: false</code> — always before the turn's closing <code>Done</code> (or <code>Error</code>) event, so <code>Done</code> is the last frame — and the web UI resends each one as a normal message. A re-roll hands queued follow-ups back the same way.</p>
+<p>Steering never cancels anything. A long tool (a big download, a slow test run) finishes first; the correction applies right after it. To end the turn instead, stop it (<a href="https://github.com/evi-assistant/evi-ai/blob/main/docs/features#stopping-a-turn" target="_blank" rel="noopener">Stopping a turn</a>).</p>
+<h2>Usage</h2>
+<h3>Web and desktop</h3>
+<p>Type and press Enter (or click <strong>Queue</strong>) while a turn is running. Use it for corrections ("not that file, the one in <code>src/</code>"), extra constraints ("and keep the public API unchanged") or answers to a question the model asked in passing.</p>
+<h3>API</h3>
+<pre><code class="language-http">POST /api/session/&lt;session_id&gt;/steer
+Content-Type: application/json
+
+{"text": "use the staging config instead"}</code></pre>
+<table><thead><tr><th>Response</th><th>Meaning</th></tr></thead><tbody><tr><td><code>{"queued": true, "pending": 1}</code></td><td>Queued; applies at the next step (<code>pending</code> counts what is waiting)</td></tr><tr><td><code>{"queued": false, "reason": "not busy"}</code></td><td>No turn is running: send it as a normal message (<code>POST /api/chat</code>)</td></tr></tbody></table>
+<p>An empty <code>text</code> is a 400. The <code>Steering</code> events arrive on the stream of the <code>POST /api/chat</code> request that runs the turn: <code>{"kind": "Steering", "text": "...", "applied": true}</code>.</p>
+<h2>Stopping a turn</h2>
+<p>A turn can be stopped from every surface. Whatever it was doing, it ends with <code>Done</code> reason <code>interrupted</code>, and the session stays usable:</p>
+<ul><li>A reply being streamed stops; its text so far is kept, marked as cut off.</li><li>Running commands (<code>run_command</code>, <code>run_python</code>, <code>monitor</code>) have their whole process tree killed, child processes included, and keep the output they had so far.</li><li>Calls that never ran, and a tool still running two seconds after the stop (one that ignores it is left behind), are answered <code>(cancelled)</code>, so the history stays valid for the next message. The <code>stop</code> hook fires.</li><li>A permission question the turn is waiting on is answered no, and nothing more is asked.</li></ul>
+<h3>Web and desktop</h3>
+<p>While a turn you started from this page runs (a message or a re-roll), a red <strong>Stop</strong> button shows next to <strong>Send</strong>. It reads <em>Stopping…</em> until the turn has ended, then goes away; you can send your next message at once.</p>
+<pre><code class="language-http">POST /api/session/&lt;session_id&gt;/cancel</code></pre>
+<table><thead><tr><th>Response</th><th>Meaning</th></tr></thead><tbody><tr><td><code>{"cancelled": true, "busy": false}</code></td><td>Stopped; the session is free for the next message</td></tr><tr><td><code>{"cancelled": false, "reason": "not busy", "busy": false}</code></td><td>No turn was running</td></tr></tbody></table>
+<p>It answers once the session is free again: normally well under a second, within a few seconds when a tool ignores the stop. Only your own live sessions can be stopped; any other id is a 404. The stopped turn's own <code>POST /api/chat</code> stream ends with <code>{"kind": "Done", "reason": "interrupted"}</code>.</p>
+<h3>Terminal (<code>evi chat</code>)</h3>
+<p>Press <strong>Ctrl+C</strong> while a turn runs to stop it; the REPL is back at its prompt with the session intact. An open permission prompt is answered no. A second Ctrl+C within two seconds quits eVi.</p>
+<h3><code>evi run</code></h3>
+<p>Ctrl+C (or a SIGINT from a script or CI runner) stops the turn and still reports a result: <code>--format json</code> prints the usual object with <code>"stop_reason": "interrupted"</code> (a run that finished says why it stopped, e.g. <code>"stop"</code>), text mode prints what streamed before it plus a note on stderr, and the exit code is <strong>130</strong>. A second Ctrl+C stops waiting for the turn to wind down.</p>
+<h2>Notes / limits</h2>
+<ul><li><strong>Steering is web and desktop only.</strong> The terminal REPL and <code>evi run</code> have no steering (stopping works everywhere).</li><li><strong>Applied between steps, not mid-step.</strong> A model that is still writing its answer finishes it first; if it then makes no tool call the turn ends, and your message is sent as the next turn.</li><li><strong>Text only.</strong> A message with an attached image, or a <code>/command</code>, typed during a turn is not queued as steering.</li></ul>
+<h2>Relevant source files</h2>
+<ul><li><code>evi/llm/agent.py</code>: <code>Agent.steer</code>, <code>take_pending_steering</code>, the <code>Steering</code> event; <code>Agent.cancel</code></li><li><code>evi/apps/web/server.py</code>: <code>POST /api/session/{session_id}/steer</code>, leftovers at turn end; <code>POST /api/session/{session_id}/cancel</code></li><li><code>evi/apps/web/static/index.html</code>: the Queue button and the queued/applied tags</li><li><code>evi/apps/web/static/app.js</code>: the Stop button</li><li><code>evi/apps/cli/main.py</code>: REPL Ctrl+C (<code>_ReplCtrlC</code>), <code>evi run</code>'s exit code 130</li><li><code>evi/proc.py</code>: commands run as a process tree that a cancel kills whole</li></ul>
+    </article>
+    <a class="doc-source" href="https://github.com/evi-assistant/evi-ai/blob/main/docs/features/steering.md">Edit on GitHub ↗</a>
+  </main>
+  <footer class="doc-foot">
+    <a href="index.html">← All documentation</a>
+    <span>eVi — local-first personal AI assistant</span>
+  </footer>
+</body>
+</html>

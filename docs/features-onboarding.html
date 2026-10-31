@@ -1,0 +1,70 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>First run and connecting a backend — eVi docs</title>
+  <meta name="description" content="A fresh eVi has no model to talk to. The web and desktop app handle that with a first-run screen, shown whenever nothing can answer yet. It offers what this machine can already use… — eVi documentation." />
+  <link rel="stylesheet" href="../styles.css" />
+  <link rel="stylesheet" href="docs.css" />
+  <link rel="icon" href="../favicon.svg" type="image/svg+xml" />
+</head>
+<body>
+  <header class="nav">
+    <a class="brand" href="../index.html" aria-label="eVi home">
+      <span class="brand-mark">e<span class="brand-accent">Vi</span></span>
+    </a>
+    <nav class="nav-links">
+      <a href="index.html">Docs</a>
+      <a href="../index.html#install">Install</a>
+      <a href="../index.html#download">Download</a>
+      <a class="nav-gh" href="https://github.com/evi-assistant/evi-ai">GitHub ↗</a>
+    </nav>
+  </header>
+  <main class="doc-main">
+    <article class="doc">
+<h1>First run and connecting a backend</h1>
+<h2>Overview</h2>
+<p>A fresh eVi has no model to talk to. The web and desktop app handle that with a <strong>first-run screen</strong>, shown whenever nothing can answer yet. It offers what this machine can already use, cheapest first, and only calls a backend "connected" once it has actually replied.</p>
+<ul><li><strong>It looks before it downloads.</strong> Setup checks for AI coding CLIs you already have (Claude Code, Codex, Gemini CLI, Amp, Qwen Code, GitHub Copilot CLI), local servers already running (LM Studio, Ollama, llama.cpp) and API keys in the environment, then offers a model download last.</li><li><strong>Connected means it answered.</strong> Picking an option sends a real one-token completion and a second one with a tool attached, and reports both: <em>Chat ✓ · Tools ✓</em>. If the backend doesn't answer, <strong>the switch is rolled back</strong> and your previous backend is left exactly as it was.</li><li><strong>A first prompt to try.</strong> An empty chat offers <em>Say hi</em> · <em>What can you do?</em> · <em>Give me a quick tour</em>; any reply proves the model, tools and settings work together.</li></ul>
+<h2>How it works</h2>
+<h3>What the first-run screen offers</h3>
+<p><code>GET /api/backend/status</code> probes everything in parallel (a CLI agent counts if its command is on <code>PATH</code>; a server counts if its port answers; llama.cpp is looked for on ports 8080 to 8090) and returns <code>suggestions</code>, ranked by how fast each reaches a first reply:</p>
+<table><thead><tr><th>Rank</th><th>Option</th><th>Badge</th><th>Why it ranks there</th></tr></thead><tbody><tr><td>1</td><td><strong>Use Claude Code / Codex / …</strong>: a CLI agent installed here</td><td>installed</td><td>No download; uses the CLI's own login (Gemini CLI needs a Gemini API key or Vertex AI)</td></tr><tr><td>2</td><td><strong>Use LM Studio / Ollama / llama.cpp</strong>: a server already running</td><td>running</td><td>Nothing to download</td></tr><tr><td>3</td><td><strong>Use your Anthropic / OpenAI API key</strong>: found in the environment</td><td>key found</td><td>A key is already set</td></tr><tr><td>4</td><td><strong>Download a model</strong> (or <strong>Start local AI</strong> once downloaded)</td><td>key-free</td><td>Works with no account at all, but downloads about 1 GB</td></tr></tbody></table>
+<p>The screen shows the top four and folds the rest under <em>Other options found</em>. <strong>Set this up later</strong> closes it; Settings → Model &amp; Backend has every option.</p>
+<p>Option 4 is eVi's own managed llama.cpp runtime. Its card lists what it will download, how big it is and where it goes before anything starts, then shows named steps (<em>Prepare runtime · Download model · Start the model · Ready</em>) with <strong>Run diagnostics</strong> and <strong>View log</strong> on failure. See <a href="features-runtime.html" target="_blank" rel="noopener">runtime.md</a>.</p>
+<h3>The verified switch</h3>
+<p>Choosing options 1 to 3 calls <code>POST /api/backend/use</code> with <code>"verify": true</code>:</p>
+<ol><li>eVi remembers the current <code>[llm]</code> backend, URL, key and model.</li><li>It switches <code>[llm]</code> to the chosen backend. With no model given, it picks one the backend actually has (the hardware-recommended one when present).</li><li>It sends <code>Reply with the single word: ok</code> with <code>max_tokens = 1</code>. If that fails, it <strong>restores the previous backend</strong> and returns <code>"ok": false</code> with the error. The screen says <em>It didn't answer — nothing was changed</em>.</li><li>It sends a second one-token request offering one dummy tool. Success sets <code>tools: true</code>. A backend can chat and still reject tools; eVi then reports <em>Chat ✓ · Tools ✗</em>, because most of eVi's features (files, search, images) are tools.</li><li>On success every open chat switches to the new backend at once.</li></ol>
+<p><code>POST /api/backend/verify</code> runs steps 3 and 4 against the backend you already have, without switching. The answer looks like:</p>
+<pre><code class="language-json">{"model": "qwen2.5:7b-instruct", "backend": "ollama", "chat": true, "tools": true,
+ "error": "", "latency_ms": 412}</code></pre>
+<p>Before 1.0.49 "connected" meant a port was open, so a CLI whose login had expired, a missing model or a wrong key only showed up at the first message.</p>
+<h3>Ollama, the older path</h3>
+<p>The Ollama route from earlier releases is still there: <strong>Install Ollama</strong> (<code>POST /api/backend/install</code>: winget on Windows, Homebrew on macOS, the official install script on Linux, or the download page when none of those is available), <strong>Start Ollama</strong> (<code>POST /api/backend/start</code>) and a model pull with progress (<code>GET /api/backend/pull</code>, server-sent events). Prefer the managed runtime if you don't already use Ollama: it needs no installer and no service.</p>
+<h2>Usage</h2>
+<h3>Web and desktop</h3>
+<ol><li>Open eVi. If nothing answers, the first-run screen appears.</li><li>Click the first option (or any other).</li><li>Read the verdict. <em>Chat ✓ · Tools ✓</em> means you're done; type in the chat or click a starter prompt.</li></ol>
+<p>Settings → Model &amp; Backend shows a live banner for the active backend (red when nothing answers at the configured URL or CLI); see <a href="features-web-desktop.html#settings-groups-explainers-and-health-banners" target="_blank" rel="noopener">web-desktop.md</a>.</p>
+<h3>CLI</h3>
+<p>The terminal has no first-run screen. Pick a backend yourself:</p>
+<pre><code class="language-text">evi runtime setup                      # eVi's own llama.cpp + a small model; it runs inside `evi web` (runtime.md)
+evi backend add claude --kind claude_agent   # a CLI agent you already use, then:
+evi backend use claude                 # (configuration.md covers each CLI agent)
+evi models recommend                   # what fits this machine, for Ollama / LM Studio
+evi doctor                             # checks the configured backend, CLI agents and API keys</code></pre>
+<h3>API</h3>
+<table><thead><tr><th>Route</th><th>What it does</th></tr></thead><tbody><tr><td><code>GET /api/backend/status</code></td><td>Probe the configured backend, local servers, CLI agents and keys; ranked <code>suggestions</code></td></tr><tr><td><code>POST /api/backend/use</code></td><td><code>{"kind", "model"?, "base_url"?, "verify"?}</code>: switch; with <code>verify</code>, roll back unless it answers</td></tr><tr><td><code>POST /api/backend/verify</code></td><td>Prove the configured backend answers (chat, then tools)</td></tr><tr><td><code>POST /api/backend/install</code></td><td>Unattended Ollama install where the OS allows it</td></tr><tr><td><code>POST /api/backend/start</code></td><td>Start <code>ollama serve</code></td></tr><tr><td><code>GET /api/backend/pull</code></td><td>Pull an Ollama model, streaming progress</td></tr></tbody></table>
+<h2>Notes / limits</h2>
+<ul><li><strong>A CLI agent counts as found when its command is on <code>PATH</code>.</strong> Whether it is signed in only shows at the verify step, which is the point of verifying.</li><li><strong>The verify step costs two tiny requests</strong> on a metered API key.</li><li><strong>API keys are only looked for in <code>ANTHROPIC_API_KEY</code> and <code>OPENAI_API_KEY</code>.</strong> Other providers are set up in Settings → Model &amp; Backend or with <code>evi backend add</code>.</li><li><strong>The first-run screen is web and desktop only.</strong> <code>evi chat</code> with no working backend fails at the first message; <code>evi doctor</code> says why.</li></ul>
+<h2>Relevant source files</h2>
+<ul><li><code>evi/apps/web/server.py</code>: <code>/api/backend/status</code>, <code>_first_run_suggestions</code>, the verified switch, <code>_verify_llm</code></li><li><code>evi/apps/web/static/index.html</code>: the first-run screen, the verdict, starter prompts</li><li><code>evi/firstrun.py</code>: the Ollama install plan and the recommended Ollama model</li></ul>
+    </article>
+    <a class="doc-source" href="https://github.com/evi-assistant/evi-ai/blob/main/docs/features/onboarding.md">Edit on GitHub ↗</a>
+  </main>
+  <footer class="doc-foot">
+    <a href="index.html">← All documentation</a>
+    <span>eVi — local-first personal AI assistant</span>
+  </footer>
+</body>
+</html>

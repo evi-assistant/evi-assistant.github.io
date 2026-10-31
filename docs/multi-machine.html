@@ -49,10 +49,12 @@ ollama pull qwen2.5:32b-instruct-q4_K_M     # ~22 GB, the P40 sweet spot</code><
 <pre><code class="language-bash">git clone &lt;repo&gt; /opt/evi &amp;&amp; cd /opt/evi
 python3 -m venv .venv &amp;&amp; source .venv/bin/activate
 pip install -e '.[web,mcp,scheduler]'</code></pre>
-<p>Tell eVi to use Ollama and start the web server bound to your LAN:</p>
+<p>Tell eVi to use Ollama, give the web server an access token, and start it bound to your LAN:</p>
 <pre><code class="language-bash">evi models backend ollama                       # auto-bumps base_url to :11434/v1
 evi models use qwen2.5:32b-instruct-q4_K_M
+evi web-config token rotate                     # prints the token; keep it
 evi web --host 0.0.0.0 --port 8000              # listens on the LAN</code></pre>
+<p>Without a token eVi answers only the machine it runs on, so <code>evi web</code> refuses to start on a LAN address until one is set. The token is saved as <code>[web] auth_token</code> in <code>config.toml</code>; <code>evi web-config token show</code> prints it again. Sign in with it once in each browser, and give it to the other machines' clients (see <a href="https://github.com/evi-assistant/evi-ai/blob/main/docs#security" target="_blank" rel="noopener">Security</a>).</p>
 <p>For "always on", run it as a systemd service:</p>
 <pre><code class="language-ini"># /etc/systemd/system/evi-web.service
 [Unit]
@@ -70,6 +72,7 @@ Restart=on-failure
 [Install]
 WantedBy=multi-user.target</code></pre>
 <pre><code class="language-bash">sudo systemctl enable --now evi-web</code></pre>
+<p>The service reads its token from the <code>evi</code> user's eVi home (<code>~evi/.evi/config.toml</code>), so set it as that user before the first start: <code>sudo -u evi /opt/evi/.venv/bin/evi web-config token rotate</code>.</p>
 <p>The scheduler boots automatically inside the FastAPI lifespan; any <code>evi schedule add</code> tasks fire from this machine.</p>
 <h2>2. Desktop (the 16 GB workstation)</h2>
 <p>Same install as the server. Pick a backend you have running locally:</p>
@@ -106,16 +109,17 @@ evi profile add away --backend lmstudio \
 evi --profile away chat        # off-LAN: fall back to a tiny local model</code></pre>
 <h3>Desktop (Tauri) on the laptop</h3>
 <p>The Tauri desktop app can run in <strong>remote mode</strong>, skipping the Python spawn entirely. The webview points at the AI server directly:</p>
-<pre><code class="language-bash">EVI_REMOTE_URL=http://ai-server.local:8000 evi-desktop.exe</code></pre>
+<pre><code class="language-bash">EVI_REMOTE_URL=http://ai-server.local:8000 EVI_REMOTE_TOKEN=&lt;token&gt; evi-desktop.exe</code></pre>
+<p><code>EVI_REMOTE_TOKEN</code> is the server's access token (<code>evi web-config token show</code> on the server). Without it the app uses the token <code>~/.evi/peers.json</code> keeps for a peer at the same address, and without either the window shows the sign-in prompt. A phone or tablet browser signs in with the same token.</p>
 <p>That's the laptop's nicest experience: no Python required for chat, just a webview against your home server.</p>
 <h2>DNS / discovery notes</h2>
 <p>Replace <code>ai-server.local</code> with whatever your network resolves. Options:</p>
 <ul><li><strong>mDNS / Bonjour</strong>: most modern OSes resolve <code>&lt;hostname&gt;.local</code> out of the box.</li><li><strong><code>/etc/hosts</code> or Windows hosts file</strong>: hard-code the LAN IP if mDNS isn't working.</li><li><strong>Tailscale / wireguard</strong>: works off-LAN too. Profile points at the Tailscale magic-DNS hostname, and you're "home" anywhere.</li></ul>
 <p>If you go the Tailscale route, you can drop the <code>--profile away</code> fallback altogether and just always use the server.</p>
 <h2>Security</h2>
-<p><code>evi web --host 0.0.0.0</code> binds to <strong>every</strong> interface. If your AI server is on a network you don't control, you should:</p>
-<ul><li>Bind to a specific interface (<code>--host 10.0.0.5</code>) or only localhost (<code>--host 127.0.0.1</code>) and tunnel via SSH or Tailscale.</li><li>Put it behind a reverse proxy that does auth (nginx + basic auth, or Cloudflare Access).</li><li>Or just keep it on a LAN you trust.</li></ul>
-<p>eVi has no built-in auth on the web UI by design — it assumes a trusted network.</p>
+<p>Without an access token eVi answers only the machine it runs on: the client's address must be loopback, whatever <code>Host</code> header it sends. So serving the LAN, as this page does, needs a token on the AI server (<code>evi web-config token rotate</code>), and <code>evi web --host 0.0.0.0</code> refuses to start without one. Every client on another machine signs in with it: browsers once, the desktop app through <code>EVI_REMOTE_TOKEN</code>, peers through their <code>peers.json</code> entry. The full rules are in <a href="security.html" target="_blank" rel="noopener">docs/security.md</a>.</p>
+<p><code>evi web --host 0.0.0.0</code> binds to <strong>every</strong> interface. If your AI server is on a network you don't control, also:</p>
+<ul><li>Bind to a specific interface (<code>--host 10.0.0.5</code>) or only localhost (<code>--host 127.0.0.1</code>) and tunnel via SSH or Tailscale. Through an SSH tunnel clients reach eVi from the server's loopback, but still set a token if anyone else can log in to that machine.</li><li>Put it behind a reverse proxy that does auth (nginx + basic auth, or Cloudflare Access), <strong>and</strong> keep eVi's own token: a request the proxy forwards (it carries <code>X-Forwarded-For</code>, <code>Forwarded</code> or <code>X-Real-IP</code>) never counts as this machine's, even when the proxy runs here. The proxy must pass the browser's <code>Host</code> through (nginx: <code>proxy_set_header Host $host;</code>, Apache: <code>ProxyPreserveHost On</code>). eVi refuses state-changing requests whose <code>Origin</code> doesn't match the host it was reached on, so a proxy that rewrites <code>Host</code> (nginx's default) gets <code>403 Refusing a cross-site request</code> on every chat. If you can't keep the <code>Host</code>, have the proxy send <code>X-Forwarded-Host</code> (and <code>X-Forwarded-Port</code>) and start eVi with <code>EVI_TRUSTED_PROXY=1</code>.</li></ul>
 <h2>Syncing your state across machines (<code>evi sync</code>)</h2>
 <p>The three machines above can share the <em>knowledge</em> that should follow you — memory, skills, profiles, saved commands, routes, the MCP server list, and hooks — via a git remote (any private repo works):</p>
 <pre><code class="language-bash"># On the first machine: point at an (empty) private git repo + push.

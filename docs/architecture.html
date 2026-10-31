@@ -58,22 +58,26 @@
 <p>Per-turn cap: <code>max_turns=6</code> for the main agent, <code>max_turns=8</code> for the dream agent. Prevents tool-call ping-pong loops.</p>
 <h2>System prompt composition</h2>
 <p><code>Agent._compose_system_prompt()</code> stitches together:</p>
-<ol><li>The base prompt ("You are eVi, …").</li><li><code>## Memory index</code> — one-line summaries of every entry in <code>~/.evi/memory/</code>. Pulled live so dreaming + manual edits show up.</li><li><code>## Available skills</code> — name + description of every <code>~/.evi/skills/&lt;name&gt;/SKILL.md</code>. The body is loaded on demand via the <code>invoke_skill</code> tool.</li><li><code>## Project context (&lt;path&gt;)</code> — full body of the nearest <code>EVI.md</code> walking up from cwd.</li></ol>
+<ol><li>The base prompt ("You are eVi, …").</li><li><code>## Memory index</code> — one-line summaries of every entry in <code>~/.evi/memory/</code>. Pulled live so dreaming + manual edits show up.</li><li><code>## Available skills</code> — name + description of every <code>~/.evi/skills/&lt;name&gt;/SKILL.md</code>. The body is loaded on demand via the <code>invoke_skill</code> tool.</li><li><code>## Project context (&lt;path&gt;)</code> — the <code>EVI.md</code> / <code>AGENTS.md</code> files from the working folder up to the git top level (outside git, up to the filesystem root), one per folder, outermost first. A file above the repository never applies inside it. These load whether or not the folder is trusted: they are instructions, not settings.</li></ol>
 <p>Refreshed on <code>Agent.__init__</code> and <code>Agent.reset()</code>. Not refreshed mid-turn — if you edit memory while a session is running, the new state appears on the next turn.</p>
 <h2>Tool framework</h2>
 <pre><code class="language-python">@tool(description="Read a UTF-8 text file.", category="fs")
 def read_file(path: str) -&gt; str:
     return Path(path).read_text(encoding="utf-8")</code></pre>
 <p>The decorator inspects the function's type hints and docstring, builds an OpenAI-shaped JSON schema, and registers a <code>Tool</code> dataclass in <code>REGISTRY</code>. The agent passes <code>[t.openai_schema() for t in tools]</code> to the LLM each turn.</p>
+<p><strong>The calling session.</strong> For each call the agent builds a <code>ToolContext</code> (<code>evi/tools/base.py</code>): the agent itself, its session id, working folder and turn index, the multi-user login's data folder (<code>user_root</code>), a cancel token, and the <code>parent</code> context when the agent was built inside another agent's tool call. A tool function that declares a <code>ctx</code> parameter receives it; <code>ctx</code> stays out of the schema, so the model can't see or forge it. The memory tools use it to pick the session user's store, and <code>write_file</code>, <code>edit_file</code> and <code>apply_patch</code> to tag their checkpoint entries with the session and turn. A tool with a <code>binder</code> is bound once per session, at its first call, so the state it closes over belongs to that session (<a href="sdk.html#per-session-state-binder" target="_blank" rel="noopener">sdk.md</a>). The agent also sets the context in a ContextVar around each call. It flows down only: an <code>Agent</code> built inside a tool call (a subagent) takes its <code>user_root</code> from it and keeps it as its <code>parent</code>.</p>
 <p>Tool <em>categories</em> govern:</p>
 <ul><li>Whether the tool is enabled (<code>tools.&lt;category&gt;</code> in <code>config.toml</code>)</li><li>Whether tool calls auto-approve (<code>auto.auto_approve</code> list)</li></ul>
 <p>New tool? Decorate a function with <code>@tool(category="…")</code>, import the module from <code>evi/apps/cli/main.py</code> and <code>evi/apps/web/server.py</code> for the side effect, add a config toggle if you want one.</p>
 <h2>Permission flow</h2>
 <p><code>Agent.permission_callback: (name, args_json, category) → bool</code>.</p>
-<p>If the tool's category is in <code>auto.auto_approve</code> (or <code>auto_all</code> is set for the session), the callback is skipped. Otherwise it's invoked synchronously inside <code>_invoke_tool</code>. Returning <code>False</code> surfaces <code>"PERMISSION DENIED"</code> as the tool result; the model adapts on the next turn.</p>
-<p><strong>CLI</strong>: callback is <code>_cli_permission_prompt</code> which uses <code>console.input</code>.</p>
+<p>Before any prompt, <code>Agent._permission_decision</code> asks <code>evi.permissions.decide()</code> for <code>allow</code> / <code>deny</code> / <code>ask</code>: hard-deny, then protected paths (a write to one asks in every mode), then the mode, the rules (matched on the tool name or category, per command for a shell line), secret reads, auto-approve categories and trusted scopes. <code>/auto on</code> (<code>auto_all</code>) is passed to <code>decide()</code> as <code>yolo</code>, so hard-deny and protected paths still apply under it. The destructive-command guard (<code>evi/shell_guard.py</code>) then turns anything but a <code>deny</code> into a prompt for a matching shell line. Only an <code>ask</code> reaches the callback, invoked synchronously while the turn's calls are gated. With no callback, an <code>ask</code> is allowed, except a protected write or a guard hit, which is denied. Returning <code>False</code> surfaces <code>"PERMISSION DENIED"</code> as the tool result; the model adapts on the next turn. Details: <a href="features-permissions-and-sandbox.html" target="_blank" rel="noopener">Permissions &amp; sandbox</a>.</p>
+<p><strong>CLI</strong>: callback is <code>_cli_permission_prompt</code> which uses <code>console.input</code> (<code>y</code>/<code>a</code> this call, <code>n</code>, <code>s</code> the rest of the session after a y/N confirmation).</p>
 <p><strong>Web</strong>: callback runs on a worker thread (the agent loop is sync). It generates a <code>decision_id</code>, pushes a <code>PermissionRequest</code> SSE event with it, and blocks on a <code>threading.Event</code>. The browser POSTs to <code>/api/decide</code>; the endpoint flips the event; the worker unblocks.</p>
-<p><strong>Scheduler / scripted runs</strong>: no callback set → default-allow.</p>
+<p><strong>Scheduler / scripted runs</strong>: no callback set → default-allow for an <code>ask</code> (a protected write or a destructive-guard hit is denied).</p>
+<h2>Config layers</h2>
+<p><code>Config.load()</code> merges three layers: <code>~/.evi/config.toml</code>, the active profile (<code>~/.evi/profiles/&lt;name&gt;.toml</code>), and a repository's <code>.evi.toml</code>, found from the working folder up to the git top level. The <code>.evi.toml</code> applies only when <code>evi/trust.py</code> says the folder is trusted and the file is the version that was approved; even then <code>evi/project.py</code> lets it set only model/sampling preferences and tighten <code>[tools]</code> / <code>[auto]</code>. <code>Config.load()</code> never prompts: <code>evi chat</code> asks before it loads the config, and every other surface runs with an untrusted project layer off. A key no section knows is warned about, not fatal.</p>
+<p><code>Config.save()</code> writes the user layer only: <code>config.toml</code> as it is on disk, with the fields the caller changed patched in, so profile and project values never reach it.</p>
 <h2>Backends</h2>
 <p><code>evi.backends.Backend</code> is the ABC. Four implementations:</p>
 <table><thead><tr><th>Kind</th><th>Chat?</th><th>Model listing</th><th>Pull API</th></tr></thead><tbody><tr><td><code>lmstudio</code></td><td>✅</td><td><code>/v1/models</code></td><td>❌</td></tr><tr><td><code>ollama</code></td><td>✅</td><td><code>/api/tags</code> (rich)</td><td>✅ (<code>/api/pull</code> streaming)</td></tr><tr><td><code>llamacpp</code></td><td>✅</td><td><code>/v1/models</code> (one loaded)</td><td>❌</td></tr><tr><td><code>openai_compat</code></td><td>✅</td><td>best-effort</td><td>❌</td></tr></tbody></table>
@@ -81,6 +85,7 @@ def read_file(path: str) -&gt; str:
 <h2>Storage layout (<code>~/.evi/</code>)</h2>
 <pre><code>config.toml         primary config; profiles overlay this
 profiles/*.toml     per-machine overlays selected by EVI_PROFILE / --profile
+trusted_folders.json  folders / repositories whose .evi.toml applies (evi trust)
 memory/             markdown notes, .attic/ holds soft-deleted
 skills/&lt;name&gt;/      SKILL.md + skill-local assets
 commands/&lt;name&gt;.md  user-defined slash command templates with {args}
@@ -91,6 +96,8 @@ images/             ComfyUI output cache
 models/             huggingface_hub downloads
 screenshots/        computer-use screenshots
 transcripts/&lt;day&gt;/&lt;session&gt;.jsonl   session logs feeding the dream engine
+users/&lt;name&gt;/       multi-user web: a login's transcripts/ and memory/
+checkpoints/        journal.jsonl + blobs/: file writes the agent can undo
 logs/dreams/        per-dream audit logs
 logs/scheduled/     per-task run logs</code></pre>
 <h2>Subagents</h2>
@@ -99,8 +106,11 @@ logs/scheduled/     per-task run logs</code></pre>
 <h2>Lifecycles</h2>
 <p><strong>MCP</strong> — CLI lazy-starts on first <code>_build_agent</code>, <code>atexit</code> cleans up. Web starts it inside the FastAPI lifespan context.</p>
 <p><strong>Scheduler</strong> — CLI: <code>evi scheduler</code> runs as a foreground daemon. Web: also starts in the lifespan so <code>evi web</code> covers chat + scheduled jobs in one process.</p>
+<p><strong>Managed llama.cpp runtime</strong> — <code>evi web</code> (which the desktop sidecar runs) relaunches it in the background at start (<code>evi.runtime.setup.ensure_running</code>). Setup, a model swap, the GPU switch and each relaunch write the server's window (<code>-c</code>) into <code>[llm] context_size</code>, and open web sessions pick it up on their next turn (<code>Agent.refresh_context_size</code>). If <code>[llm]</code> has moved to another backend, startup gives the earlier <code>context_size</code> back instead.</p>
+<p><strong>CLI-agent backends</strong> — <code>codex</code>, <code>gemini</code>, <code>amp</code>, <code>qwen</code> and <code>copilot</code> run as child processes started by <code>evi.proc.spawn</code>, with the conversation on stdin. On Windows each run gets its own Job Object (the CLI is created suspended and resumed once inside it); on POSIX it leads its own session. <code>kill_tree</code> therefore ends the whole tree when a turn times out, and any still running when eVi exits are killed.</p>
 <p><strong>Tauri desktop</strong> — Two modes:</p>
 <ul><li>Local (default): spawns <code>py -3.13 -m uvicorn evi.apps.web.server:app</code> as a child, polls <code>/api/health</code>, opens webview at the local port.</li><li>Remote (<code>EVI_REMOTE_URL</code> set): skips the spawn, just navigates.</li></ul>
+<p>In both, the webview gets IPC for the UI's nine desktop commands from the server's origin only, has no <code>window.__TAURI__</code>, and a navigation guard keeps it on that origin (<a href="security.html#shell-isolation" target="_blank" rel="noopener">security.md</a>).</p>
 <h2>Testing</h2>
 <p><code>pytest</code> against the in-process <code>Agent</code> with stubbed <code>OpenAI</code> clients + <code>httpx.MockTransport</code> for HTTP boundaries. Web tests use Starlette's <code>TestClient</code>; permission-flow integration is unit-tested instead of end-to-end because TestClient buffers SSE responses.</p>
     </article>

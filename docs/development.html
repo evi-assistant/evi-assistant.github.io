@@ -31,20 +31,23 @@
 # source .venv/bin/activate            # Linux / macOS
 pip install -e '.[dev,web,mcp,scheduler,downloads,web-tools,stt,computer]'</code></pre>
 <p>The <code>stt</code> and <code>computer</code> extras pull native deps (PortAudio for sounddevice, screen capture libs for pyautogui). If you're not actively touching those areas, skip them.</p>
+<p><code>scripts/dev-bootstrap.sh</code> / <code>scripts\dev-bootstrap.ps1</code> do the same with a venv outside the checkout, and <code>evi doctor --dev</code> checks the result (venv, git <code>safe.directory</code>, test and lint tools, line endings) and prints fix commands. Both are described in <a href="self-build.html" target="_blank" rel="noopener">self-build.md</a>.</p>
 <h2>Test suite</h2>
-<pre><code class="language-bash">pytest -q                         # ~12 s, 183 tests
+<pre><code class="language-bash">pytest -q                         # the unit suite (pytest --collect-only -q for the count)
 pytest -q tests/test_agent.py     # one file
 pytest -q -k "permission"         # by keyword
 pytest --timeout=15               # ceiling per test</code></pre>
 <p>The suite avoids network calls and external processes by:</p>
 <ul><li>Stubbing the OpenAI client with hand-rolled <code>_FakeClient</code> chunks (see <code>tests/test_agent.py</code>).</li><li>Patching <code>httpx</code> with <code>MockTransport</code> for backend HTTP boundaries (<code>tests/test_backends.py</code>, <code>tests/test_websearch.py</code>, <code>tests/test_image_comfy.py</code>).</li><li>Spawning real <code>git</code> for worktree tests, but they're skipped when <code>git</code> isn't on PATH.</li><li>Stubbing the MCP <code>ClientSession</code> for hook-running and bridge tests.</li></ul>
 <h2>Linting</h2>
-<pre><code class="language-bash">ruff check evi apps tests
-ruff format evi apps tests        # if you want formatter behavior too</code></pre>
-<p><code>pyproject.toml</code> sets <code>line-length = 100, target-version = "py311"</code>.</p>
+<pre><code class="language-bash">ruff check evi tests scripts .github/actions   # what CI runs
+ruff format evi tests             # if you want formatter behavior too</code></pre>
+<p><code>pyproject.toml</code> sets <code>line-length = 100, target-version = "py312"</code>.</p>
+<p>A change that adds a CLI command or a web route must also change something under <code>docs/</code>, or CI's docs-freshness check fails it; see <a href="https://github.com/evi-assistant/evi-ai/blob/main/TESTING.md#ci-gates" target="_blank" rel="noopener">TESTING.md → CI gates</a> for that and the other checks.</p>
 <h2>Project layout</h2>
 <pre><code>evi/                core library — no IO at import time
   agent.py           Agent class + Event types
+  attest.py          director attestation: the key, sign / verify, who signs
   backends/          LM Studio / Ollama / llama.cpp / OpenAI-compat
   commands.py        ~/.evi/commands/ loader
   config.py          Config dataclasses + load/save + dir constants
@@ -61,15 +64,17 @@ ruff format evi apps tests        # if you want formatter behavior too</code></p
     manager.py       MCPManager — boots stdio servers, registers tools
     servers.py       MCPServer dataclass + JSON loader
   memory.py          MemoryStore with .attic/ soft-delete
+  proc.py            spawn() / run(): killable process trees, EVI_AGENT
   profiles.py        partial TOML overlay merge
   project.py         find_project_file → ProjectContext
   recommend.py       tiered model picks per VRAM
+  redact.py          secret redaction: transcripts, logs, tool-call displays
   scheduled.py       ScheduledTask + TaskStore
   scheduler.py       Scheduler — APScheduler wrapper
   skills.py          SkillStore + minimal frontmatter parser
   tools/
     base.py          @tool decorator + REGISTRY + Tool dataclass
-    code.py          run_python tool (subprocess)
+    code.py          run_python tool (evi.proc.run)
     computer.py      pyautogui wrappers — screenshot/click/type/key/scroll
     fs.py            read_file/write_file/list_dir
     image_comfy.py   ComfyUI text2img
@@ -85,7 +90,7 @@ ruff format evi apps tests        # if you want formatter behavior too</code></p
   apps/              frontends (shipped in the wheel)
     cli/main.py      Typer CLI — every public command
     web/server.py    FastAPI + SSE + permission flow
-    web/static/      vanilla JS chat UI
+    web/static/      the UI: index.html (markup), app.js (code), vendor/ (pinned libraries)
 desktop/             Tauri 2 project (NOT a Python package)
 tests/               pytest — one file per module
 docs/                this folder
@@ -108,6 +113,50 @@ scripts/             install + dev helpers</code></pre>
    def test_the_tool() -&gt; None:
        out = REGISTRY["the_tool"].call(json.dumps({"arg1": "x"}))
        assert ...</code></pre>
+<h3>A tool that runs a command</h3>
+<p>Run it through <code>evi.proc.run</code>, as <code>run_command</code>, <code>run_python</code> and <code>monitor</code> do, never <code>subprocess.run(timeout=)</code>, which kills only the direct child and, on Windows, then waits for pipes a grandchild still holds:</p>
+<pre><code class="language-python">from evi import proc
+from evi.tools.base import ToolContext, tool
+
+@tool(description="…", category="shell")
+def the_tool(command: str, ctx: ToolContext | None = None) -&gt; str:
+    res = proc.run(
+        command, shell=True, timeout=60,
+        cancel_token=getattr(ctx, "cancel_token", None),
+        env=proc.scrubbed_env() if proc.runs_unattended(ctx) else None,
+    )
+    if res.cancelled or res.timed_out:
+        ...  # the whole tree is dead; res.output is what it wrote until then
+    return res.output</code></pre>
+<ul><li><code>run</code> starts the command with <code>spawn</code>, as the root of a tree it can kill (a Job Object on Windows, a process group or session elsewhere), with stdin the null device unless you pass <code>input=</code>, and with <code>EVI_AGENT=1</code> added to its environment (<code>agent_env</code>), which makes director tooling refuse to run in it.</li><li>It kills the whole tree at <code>timeout</code>, as soon as <code>cancel_token</code> is set (the turn was stopped) or eVi is exiting, or once <code>until</code> matches a line, and returns what was read so far in a <code>RunResult</code> (<code>timed_out</code>, <code>cancelled</code>, <code>matched</code>, <code>killed</code>, <code>detached</code>). It raises <code>OSError</code> only when the command can't start.</li><li>Pass <code>env=proc.scrubbed_env()</code> (no <code>*_KEY</code> / <code>*_TOKEN</code> / <code>*_SECRET</code>) when the run is sandboxed or <code>proc.runs_unattended(ctx)</code> says nobody is watching.</li><li>Take a <code>ctx</code> parameter for the cancel token, and poll it in any other long loop. Each turn has its own token, so read it from the call's <code>ctx</code>; never keep one across calls.</li></ul>
+<h2>Redacting secrets (<code>evi.redact</code>)</h2>
+<p>What eVi writes down or shows of a turn (a transcript line, a log, a report, a tool-call display) goes through <code>evi.redact</code>, which replaces each secret with <code>[REDACTED:&lt;kind&gt;]</code>. What the model works from (<code>Agent.history</code>) is never redacted. The API is stable:</p>
+<pre><code class="language-python">from evi.redact import Redactor, redact, redact_obj
+
+red = Redactor()                      # one per event, line or report
+preview = red(output)[:400]           # redact first, then cut
+args = red.args(event.arguments)      # tool-call arguments: still JSON
+calls = red.tool_calls(msg["tool_calls"])   # ids, types and names kept
+payload = red.obj(payload)            # every string in a JSON-like value
+red.counts, red.total                 # what it replaced, by kind
+redact(text), redact_obj(value)       # one-offs</code></pre>
+<ul><li><strong>Redact, then truncate.</strong> A known value cut in half no longer matches, and neither does a token shorter than its pattern's minimum.</li><li><strong>Arguments go through <code>Redactor.args</code> / <code>tool_calls</code></strong>, not <code>redact()</code> on the JSON text. <code>args</code> decodes them first (a token right after an escaped <code>\n</code> is found), redacts keys and numbers too, and always returns JSON: the very same string when there was nothing to redact, so clean arguments stay byte for byte.</li><li><strong>One <code>Redactor</code> per unit of output</strong>, not per string and not per process: it looks the known values up when it is made. They follow the environment and eVi's credential files (<code>config.toml</code>, the active profile, <code>backends.json</code>, <code>peers.json</code>, <code>users.json</code>, <code>mcp.json</code>, <code>routines.json</code>) on their own, so nothing has to refresh after a <code>Config.save</code>.</li><li><code>extra=</code> adds values the caller knows of (<code>[REDACTED:secret]</code>). A known value shorter than <code>MIN_KNOWN_LEN</code> (12) is never redacted.</li><li>A secret kept where <code>evi.redact</code> doesn't look (a keyring entry, a key file of your own): <code>register_source(name, fn)</code>, where <code>fn()</code> returns <code>(kind, value)</code> pairs (<code>None</code> removes it), and <code>refresh()</code> when the value changes. <code>fn</code> runs under the module's lock, so it must not call back into <code>evi.redact</code>. The director's key is built in, read only through <code>evi.attest</code> and only where that module would read it.</li><li><code>prime()</code> builds the set now: the REPL calls it before it sets <code>EVI_INTERACTIVE=1</code>, after which <code>evi.attest</code> no longer reads the director key in that process.</li><li><code>marker(kind)</code> builds a marker, <code>MARKER_RE</code> finds them (to count what an artifact had redacted), and <code>PATTERNS</code> is the table of token shapes.</li></ul>
+<p>Tests get a throwaway <code>EVI_HOME</code> (<code>tests/conftest.py</code>), so the known values come from there and the test's own environment.</p>
+<h2>The web UI and its libraries</h2>
+<p>The web UI, which the desktop app shows too, is plain files in <code>evi/apps/web/static/</code>:</p>
+<pre><code>index.html     markup and styles, plus the Content-Security-Policy &lt;meta&gt;
+app.js         all of the UI's code
+manifest.json  web app manifest
+vendor/        marked, DOMPurify, highlight.js, mermaid (pinned; never edit)</code></pre>
+<ul><li><code>index.html</code> loads <code>app.js</code> last, as a classic script just before <code>&lt;/body&gt;</code> (no <code>defer</code>, <code>async</code> or <code>type="module"</code>). It runs after the vendored libraries in <code>&lt;head&gt;</code> and once the markup above it is parsed, and its top-level functions and constants are globals: the desktop menu bridge (<code>window.eviUI.handleMenu</code>) and the tests call them by name.</li><li><code>index.html</code> holds no code. The page's CSP is <code>script-src 'self'</code> with no hashes, so the browser refuses an inline <code>&lt;script&gt;</code> or an <code>on*</code> attribute, and <code>python scripts/vendor_ui_libs.py --check</code> fails on one. Put code in <code>app.js</code> and attach listeners there.</li><li>Editing <code>app.js</code> never touches the CSP. The server sends the <code>&lt;meta&gt;</code> policy as the page's header, with <code>frame-ancestors 'none'</code> added (see <a href="security.html#response-headers" target="_blank" rel="noopener">security.md</a>).</li><li>Model output is rendered only through <code>renderMarkdownInto</code>, which runs marked and then DOMPurify (<code>sanitizeMarkdown</code>); never put model text into <code>innerHTML</code>. What the sanitizer keeps is in <a href="security.html#rendering-model-output" target="_blank" rel="noopener">security.md</a>.</li><li>A UI change ships a Playwright test in <code>tests/e2e/</code>; <code>tests/e2e/test_ui_xss.py</code> holds the rendering-safety corpus.</li></ul>
+<p><code>scripts/vendor_ui_libs.py</code> maintains <code>vendor/</code> and the pins that load it:</p>
+<pre><code class="language-bash">python scripts/vendor_ui_libs.py --check      # offline: vendored files, SRI pins, page CSP
+python scripts/vendor_ui_libs.py --sync-html  # rewrite the SRI pins in index.html and app.js
+python scripts/vendor_ui_libs.py              # fetch the pinned releases, verify, write vendor/
+python scripts/vendor_ui_libs.py --repin      # after a version bump: fetch, write, print new pins</code></pre>
+<ul><li><code>--check</code> verifies, offline, that:<ul><li>every file in <code>vendor/</code> matches its sha384 pin, and nothing unpinned is there;</li><li>the SRI pins match: the <code>integrity</code> of the <code>&lt;script&gt;</code> and <code>&lt;link&gt;</code> tags in <code>index.html</code>, and the <code>src: '/static/vendor/…', integrity: '…'</code> pairs in <code>app.js</code> (mermaid, which <code>loadMermaid()</code> loads on demand);</li><li>each vendored script and stylesheet, and <code>app.js</code>, is loaded exactly once;</li><li><code>index.html</code> has no inline code;</li><li>the CSP <code>&lt;meta&gt;</code> is in the form the server reads and comes before every <code>&lt;script&gt;</code> and <code>&lt;link&gt;</code>;</li><li>its <code>script-src</code> is <code>'self'</code> alone, with no <code>frame-ancestors</code>.</li></ul></li></ul>
+<p><code>tests/test_ui_render_safety.py</code> runs the same check.</p>
+<ul><li><code>--sync-html</code> only rewrites the SRI pins in <code>index.html</code> and <code>app.js</code>, and drops any leftover hash from <code>script-src</code>. When they are in step it changes nothing.</li><li>With no flag, the script downloads each library's exact npm tarball. It checks the tarball against the pinned <code>dist.integrity</code> (sha512) before reading anything, reads only the listed members (by exact name, regular files only), and refuses to write a file that differs from its pin. Nothing downloaded is executed or extracted by <code>tarfile</code>.</li><li>To move a library to a new release, set its <code>version</code> and <code>integrity</code> in <code>PACKAGES</code>, using the registry's <code>dist.integrity</code> from <code>https://registry.npmjs.org/&lt;name&gt;/&lt;version&gt;</code>. Then run <code>--repin</code>, paste the printed <code>FILES</code> block over the one in the script, run <code>--sync-html</code>, and run the UI tests.</li><li><code>highlight/highlight.min.js</code> is derived: highlight.js's prebuilt common bundle followed by every other prebuilt language file.</li><li><code>vendor/.gitattributes</code> marks the files <code>binary</code>, so git never rewrites their line endings (the pins are hashes of the bytes). <code>pyproject.toml</code> ships them as package data (<code>static/vendor/*/*</code>).</li><li>Exit codes: 0 ok, 1 a check failed or a pin does not match, 2 usage or network error.</li></ul>
 <h2>Adding a backend</h2>
 <p><code>evi/backends/__init__.py</code> registers backends in <code>KNOWN_BACKENDS</code>. Each subclass of <code>Backend</code>:</p>
 <ul><li><code>name: str</code> class attribute</li><li><code>__init__(base_url, api_key, request_timeout)</code> constructor</li><li><code>make_client() -&gt; OpenAI</code> — required</li><li>Override <code>list_models / model_info / pull_model / delete_model / supports_pull</code> as makes sense for the backend.</li></ul>
@@ -124,12 +173,22 @@ scripts/             install + dev helpers</code></pre>
 }</code></pre>
 <p>Then add a delegate tool in <code>evi/tools/subagent.py</code> that wraps <code>run_subagent(...)</code> with that profile.</p>
 <h2>Common gotchas</h2>
-<ul><li><strong>Agent.history vs transcripts</strong>: <code>history</code> is in-process, dies with the Agent. Transcripts are append-only JSONL on disk. Don't conflate them.</li><li><strong>Tool registration is import-side-effect-driven</strong>. Forgetting to import the module in the CLI / web entry points means the tool won't appear in REGISTRY. The same module imported via tests works because the test imports it.</li><li><strong><code>config.py</code> constants</strong>: Lots of <code>~/.evi/&lt;thing&gt;</code> paths live there. Always import the constant, never hard-code <code>Path.home() / ".evi" / ...</code>.</li><li><strong>Test isolation</strong>: Several modules cache state at module level (<code>memory_tools._store</code>, <code>voice_mod._WHISPER_MODEL</code>). Tests that monkeypatch their roots must do so via the module attribute, not the globals.</li><li><strong>MCP bridge ownership</strong>: <code>MCPManager</code> constructs its own bridge by default. If you pass one in (tests do), <code>manager.stop()</code> doesn't stop the bridge — the caller is responsible.</li></ul>
+<ul><li><strong>Agent.history vs transcripts</strong>: <code>history</code> is in-process, dies with the Agent. Transcripts are append-only JSONL on disk. Don't conflate them.</li><li><strong>Tool registration is import-side-effect-driven</strong>. Forgetting to import the module in the CLI / web entry points means the tool won't appear in REGISTRY. The same module imported via tests works because the test imports it.</li><li><strong><code>config.py</code> constants</strong>: Lots of <code>~/.evi/&lt;thing&gt;</code> paths live there. Always import the constant, never hard-code <code>Path.home() / ".evi" / ...</code>.</li><li><strong>Test isolation</strong>: Several modules cache state at module level (<code>memory_tools._store</code>, <code>voice_mod._WHISPER_MODEL</code>). Tests that monkeypatch their roots must do so via the module attribute, not the globals.</li><li><strong>MCP bridge ownership</strong>: <code>MCPManager</code> constructs its own bridge by default. If you pass one in (tests do), <code>manager.stop()</code> doesn't stop the bridge — the caller is responsible.</li><li><strong>Tests that sign or verify attestations</strong> (<code>evi.attest</code>) stub <code>attest._process_chain</code> and clear <code>EVI_AGENT</code> / <code>EVI_INTERACTIVE</code>, as <code>tests/test_attest.py</code> does. Otherwise they fail when an eVi agent runs the suite: <code>evi.attest</code> refuses to sign, and never reads the director key, in a process an agent may have started.</li><li><strong>The director's ground in your own eVi session</strong>: while eVi works on its own repo, a shell line that runs <code>evi task verify|reject</code> or <code>evi attest</code>, or names <code>director.key</code>, is denied. Mentions in double-quoted commit messages, <code>grep</code> patterns and <code>echo</code> are fine; see <a href="features-permissions-and-sandbox.html#the-directors-ground" target="_blank" rel="noopener">permissions-and-sandbox.md</a>.</li></ul>
 <h2>Bumping a phase</h2>
 <p>When you add a meaningful chunk of work:</p>
 <ol><li>Add tests covering the new code paths.</li><li>Update <code>README.md</code> "What's built" table.</li><li>Update <code>docs/architecture.md</code> if you added a new subsystem.</li><li>Add a memory entry in <code>~/.claude/projects/C--evi/memory/project_evi.md</code> so the next Claude Code session knows what changed.</li></ol>
+<h2>Bumping llama.cpp or the model catalog</h2>
+<p>The managed runtime downloads a <code>llama-server</code> build and catalog GGUFs, then runs and loads them, so every download is checked against a sha256 pinned in the repo: the generated <code>_ASSET_SHA256</code> block in <code>evi/runtime/llamacpp_runtime.py</code> (one pin per release asset of <code>LLAMACPP_VERSION</code>), and a <code>revision</code> (HuggingFace commit) plus <code>sha256</code> on each entry of <code>evi/data/runtime_models.json</code>. A download without a pin is never made.</p>
+<p>After bumping <code>LLAMACPP_VERSION</code>, adding an asset table, or adding a catalog model, re-pin and commit the result:</p>
+<pre><code class="language-bash">python scripts/pin_runtime_hashes.py                  # pin new assets and new models
+python scripts/pin_runtime_hashes.py --check          # offline: every download is pinned
+python scripts/pin_runtime_hashes.py --verify         # online: the pins still match upstream</code></pre>
+<ul><li>The script reads only metadata (GitHub's published asset digests, the HuggingFace revision API); it never downloads the files. Set <code>GITHUB_TOKEN</code> to avoid GitHub's anonymous rate limit.</li><li>Models keep their pinned commit; <code>--models-latest</code> moves every model to its repo's current <code>main</code>. <code>--only runtime|models</code> writes one half.</li><li>An asset that is already pinned is never silently re-pinned: a different upstream digest under the same name means the release asset was replaced, so the run changes nothing and exits 1. Pass <code>--repin-runtime</code> only once you have confirmed the replacement is genuine.</li><li>After editing <code>runtime_models.json</code> by hand, run <code>--format</code> (offline) to put it back in the layout the script writes; a unit test checks that layout.</li><li>Exit codes: 0 ok, 1 missing, stale or changed pins, 2 usage or network error. The unit suite fails while any asset or catalog model is unpinned (<code>tests/test_runtime_integrity.py</code>), so CI catches a forgotten re-pin.</li></ul>
+<p>What users see when a check fails:</p>
+<ul><li><code>&lt;file&gt; failed verification (sha256 …, expected …); the download was discarded.</code> — the bytes didn't match the pin. Nothing is extracted or run; retrying usually fixes a transfer error, and a repeat means the file changed upstream or in transit.</li><li><code>No pinned sha256 for &lt;file&gt;, so eVi won't download it unverified.</code> — the build is missing a pin (a packaging bug: re-pin and release).</li><li><code>Archive member … escapes …; refusing to extract.</code> — an archive tried to write outside its folder.</li></ul>
+<p>A runtime install is all-or-nothing: archives are verified and extracted in a private staging folder and moved into place only when complete. A catalog GGUF already on disk counts as installed only if its sha256 matches the pin (hashed once, cached beside it in <code>&lt;file&gt;.sha256</code>), so the first start after this change hashes each installed catalog model once.</p>
 <h2>Releasing</h2>
-<p>Nothing automated yet. Planned: <code>scripts/release.sh</code> that runs <code>pytest &amp;&amp; ruff check &amp;&amp; python -m build</code>, tags the commit, attaches wheels.</p>
+<p>See <a href="releasing.html" target="_blank" rel="noopener">releasing.md</a>: a <code>v*</code> tag publishes to PyPI, the desktop release and GHCR, gated on the browser e2e suite and a CHANGELOG entry for the version.</p>
     </article>
     <a class="doc-source" href="https://github.com/evi-assistant/evi-ai/blob/main/docs/development.md">Edit on GitHub ↗</a>
   </main>
